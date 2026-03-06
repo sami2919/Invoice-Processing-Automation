@@ -1,0 +1,11 @@
+{
+  "invoice_number": "INV-2005",
+  "vendor": {"name": "Threshold Testing LLC"},
+  "date": "2026-02-01",
+  "due_date": "2026-03-01",
+  "line_items": [
+    {"item": "WidgetA", "quantity": 13, "unit_price": 250.00, "amount": 3250.00},
+    {"item": "WidgetB", "quantity": 13, "unit_price": 499.999, "amount": 6499.99}
+  ],
+  "total": 9999.99
+}

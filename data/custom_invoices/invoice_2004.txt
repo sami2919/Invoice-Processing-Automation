@@ -1,0 +1,8 @@
+INVOICE
+Vendor: Future Corp
+Invoice Number: INV-2004
+Date: 2027-06-15
+Due Date: 2027-07-15
+Items:
+  WidgetA    qty: 3    unit price: $250.00
+Total Amount: $750.00

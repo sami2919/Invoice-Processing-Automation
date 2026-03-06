@@ -1,0 +1,12 @@
+{
+  "invoice_number": "INV-2001",
+  "vendor": {"name": "Precision Parts Ltd."},
+  "date": "2026-02-01",
+  "due_date": "2026-03-01",
+  "line_items": [
+    {"item": "WidgetA", "quantity": 5, "unit_price": 250.00, "amount": 1500.00},
+    {"item": "WidgetB", "quantity": 3, "unit_price": 500.00, "amount": 1200.00}
+  ],
+  "subtotal": 2700.00,
+  "total": 2700.00
+}
