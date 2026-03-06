@@ -10,106 +10,142 @@ from src.models.state import InvoiceState
 logger = structlog.get_logger(__name__)
 
 
+def _make_decision(status: str, approver: str, reasoning: str, action: str) -> dict:
+    decision = ApprovalDecision(status=status, reasoning=reasoning, approver=approver)
+    return {
+        "approval_decision": decision.model_dump(),
+        "current_agent": "approval",
+        "audit_trail": [{"agent": "approval", "action": action, "details": reasoning}],
+    }
+
+
 def approval_node(state: InvoiceState) -> dict:
     settings = get_settings()
     fraud = state.get("fraud_result") or {}
     inv = state.get("extracted_invoice") or {}
+    validation = state.get("validation_result") or {}
 
     risk_score = int(fraud.get("risk_score", 0))
     amount = float(inv.get("total_amount") or 0.0)
     invoice_number = inv.get("invoice_number", "UNKNOWN")
     recommendation = fraud.get("recommendation", "auto_approve")
 
-    # validation failures: reject critical, escalate reviewable
-    validation = state.get("validation_result") or {}
-    if not validation.get("is_valid", True):
-        val_issues = validation.get("issues", [])
-        stock_checks = validation.get("stock_checks", {})
+    is_valid = validation.get("is_valid", True)
+    issues = validation.get("issues", [])
+    warnings = validation.get("warnings", [])
+    stock_checks = validation.get("stock_checks", {})
 
-        critical_patterns = (
-            "Required field missing", "quantity must be > 0",
-            "total_amount must be > 0", "total_amount is not a valid number",
-            "not approved", "elevated risk tier",
+    # --- STEP 1: Auto-reject on critical failures ---
+
+    # Any KNOWN item exceeding stock is a hard reject
+    has_stock_violation = any(
+        v.get("requested", 0) > v.get("available", 0)
+        for v in stock_checks.values()
+        if v.get("available") is not None
+    )
+
+    # Critical issue patterns (always reject)
+    critical_patterns = (
+        "Required field missing",
+        "quantity must be > 0",
+        "total_amount must be > 0",
+        "total_amount is not a valid number",
+        "not approved",
+        "elevated risk tier",
+        "blocked risk tier",
+        "Insufficient stock",
+    )
+    has_critical_issue = any(
+        any(pattern.lower() in issue.lower() for pattern in critical_patterns)
+        for issue in issues
+    )
+
+    # All items unknown (nothing validates at all)
+    # stock_checks may be empty {} when validation skips unknown items entirely
+    unknown_item_issues = [i for i in issues if "not found in inventory" in i.lower()]
+    line_items = inv.get("line_items") or []
+    all_items_unknown = (
+        not stock_checks and unknown_item_issues and len(unknown_item_issues) >= len(line_items)
+    ) or (
+        stock_checks
+        and all(v.get("available") is None for v in stock_checks.values())
+    )
+
+    if has_stock_violation or has_critical_issue or all_items_unknown:
+        reason = (
+            f"Critical validation failure: stock_violation={has_stock_violation}, "
+            f"critical_issue={has_critical_issue}, all_unknown={all_items_unknown}"
         )
-        has_critical = any(any(p in issue for p in critical_patterns) for issue in val_issues)
+        logger.info("approval.auto_reject", invoice=invoice_number, reason=reason)
+        return _make_decision("rejected", "system", reason, "auto_reject")
 
-        # all items out of stock = unfillable
-        if stock_checks:
-            overage = sum(1 for v in stock_checks.values() if not v.get("sufficient", True))
-            if overage == len(stock_checks) and overage > 0:
-                has_critical = True
-
-        # all items unknown = critical
-        unknown_issues = [i for i in val_issues if "not found in inventory" in i]
-        if unknown_issues and len(stock_checks) == 0:
-            has_critical = True
-
-        if has_critical or risk_score >= settings.high_risk_threshold:
-            status, action = "rejected", "auto_reject"
-            prefix = "Validation failed (critical)"
-        else:
-            status, action = "escalated", "auto_escalate"
-            prefix = "Flagged for review (validation concerns)"
-
-        decision = ApprovalDecision(
-            status=status,
-            reasoning=f"{prefix}: {'; '.join(val_issues)}. Risk score: {risk_score}/100.",
-            approver="system",
-        )
-        logger.info(f"approval.{action}", invoice=invoice_number, issues=len(val_issues), risk=risk_score)
-        return {
-            "approval_decision": decision.model_dump(),
-            "current_agent": "approval",
-            "audit_trail": [{"agent": "approval", "action": action,
-                             "details": f"Validation failed ({len(val_issues)} issue(s)), risk {risk_score}/100"}],
-        }
-
-    # auto-reject: high risk
+    # --- STEP 2: Auto-reject on high fraud risk ---
     if risk_score >= settings.high_risk_threshold:
+        reason = f"High fraud risk score: {risk_score}"
         logger.warning("approval.auto_reject", invoice=invoice_number, risk=risk_score)
-        decision = ApprovalDecision(
-            status="rejected",
-            reasoning=f"Auto-rejected: risk score {risk_score}/100 >= threshold ({settings.high_risk_threshold}).",
-            approver="system",
-        )
-        return {
-            "approval_decision": decision.model_dump(),
-            "current_agent": "approval",
-            "audit_trail": [{"agent": "approval", "action": "auto_reject",
-                             "details": f"Risk {risk_score}/100 >= {settings.high_risk_threshold}"}],
-        }
+        return _make_decision("rejected", "system", reason, "auto_reject")
 
-    # auto-approve: low amount AND low risk
+    # --- STEP 3: Escalate on non-critical validation failures ---
+    if not is_valid:
+        reason = f"Validation issues require review: {'; '.join(issues[:3])}"
+        logger.info("approval.escalate", invoice=invoice_number, issues=len(issues))
+        return _escalate_for_review(state, reason, invoice_number)
+
+    # --- STEP 4: Escalate on concerning warnings ---
+    concerning_warning_patterns = (
+        "price variance", "price differs", "price mismatch",
+        "math", "total mismatch", "calculated total",
+        "currency", "non-USD", "EUR",
+        "duplicate", "previously processed",
+        "unknown item", "not found in inventory",
+        "OCR", "artifact",
+    )
+    concerning_warnings = [
+        w for w in warnings
+        if any(p.lower() in w.lower() for p in concerning_warning_patterns)
+    ]
+
+    if concerning_warnings:
+        reason = f"Warnings need review: {'; '.join(concerning_warnings[:3])}"
+        logger.info("approval.escalate", invoice=invoice_number, warnings=len(concerning_warnings))
+        return _escalate_for_review(state, reason, invoice_number)
+
+    # --- STEP 5: Auto-approve if clean ---
     if amount < settings.auto_approve_threshold and risk_score < settings.medium_risk_threshold:
-        decision = ApprovalDecision(
-            status="approved",
-            reasoning=(f"Auto-approved: amount ${amount:,.2f} below ${settings.auto_approve_threshold:,.0f} "
-                       f"and risk {risk_score}/100 below {settings.medium_risk_threshold}."),
-            approver="auto",
-        )
-        return {
-            "approval_decision": decision.model_dump(),
-            "current_agent": "approval",
-            "audit_trail": [{"agent": "approval", "action": "auto_approve",
-                             "details": f"${amount:,.2f}, risk {risk_score}/100"}],
-        }
+        reason = f"Clean invoice: amount=${amount:,.2f}, risk={risk_score}"
+        logger.info("approval.auto_approve", invoice=invoice_number, amount=amount, risk=risk_score)
+        return _make_decision("approved", "auto", reason, "auto_approve")
 
-    # human review — interrupt() pauses the graph
+    # --- STEP 6: Everything else -> HITL ---
+    reason = f"Amount=${amount:,.2f} or risk={risk_score} requires human review"
+    logger.info("approval.needs_review", invoice=invoice_number, amount=amount, risk=risk_score)
+    return _escalate_for_review(state, reason, invoice_number)
+
+
+def _escalate_for_review(state: dict, reason: str, invoice_number: str = "UNKNOWN") -> dict:
+    """Interrupt the graph for human review."""
+    fraud = state.get("fraud_result") or {}
+    inv = state.get("extracted_invoice") or {}
+    recommendation = fraud.get("recommendation", "auto_approve")
+
     signals = fraud.get("signals", [])
     sig_desc = [s.get("description", "") for s in signals if isinstance(s, dict)]
 
-    # TODO: make this configurable?
     label_map = {"auto_approve": "approve", "flag_for_review": "review", "block": "reject"}
     rec_label = label_map.get(recommendation, recommendation)
 
     review_ctx = {
-        "invoice": inv, "validation": state.get("validation_result") or {},
-        "fraud": fraud, "amount": amount, "risk_score": risk_score,
-        "recommendation": rec_label, "fraud_signals": sig_desc,
+        "invoice": inv,
+        "validation": state.get("validation_result") or {},
+        "fraud": fraud,
+        "amount": float(inv.get("total_amount") or 0),
+        "risk_score": int(fraud.get("risk_score", 0)),
+        "recommendation": rec_label,
+        "fraud_signals": sig_desc,
         "fraud_narrative": fraud.get("narrative", ""),
+        "escalation_reason": reason,
     }
 
-    logger.info("approval.needs_review", invoice=invoice_number, amount=amount, risk=risk_score)
     human_input = interrupt(review_ctx)
 
     valid = {"approved", "rejected", "escalated", "pending_human_review"}

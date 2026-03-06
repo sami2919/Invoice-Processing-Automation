@@ -62,8 +62,9 @@ provided invoice text and return them as structured JSON.
 
 EXTRACTION RULES:
 1. Extract exactly what is written — do not invent or assume missing data.
-2. Normalize item names: remove embedded spaces ("Widget A" → "WidgetA", \
-"Gadget X" → "GadgetX").
+2. Normalize item names only (NOT vendor names): remove embedded spaces \
+from product/item names ("Widget A" → "WidgetA", "Gadget X" → "GadgetX"). \
+Keep vendor names exactly as written.
 3. Fix OCR artifacts: letter O used as digit 0 ("2O26" → "2026", \
 "3,500.O0" → "3500.00"); letter l used as digit 1.
 4. Recalculate line_total as qty × unit_price; note any mismatch in \

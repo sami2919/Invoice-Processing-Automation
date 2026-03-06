@@ -58,6 +58,16 @@ def test_fuzzy_match_gadget_x(test_db):
     assert fuzzy_match_item("Gadget X", db_path=test_db) == "GadgetX"
 
 
+def test_fuzzy_match_ocr_typo(test_db):
+    """OCR artifact 'GadgX' should still match GadgetX (ratio ~0.83, needs 0.8 threshold)."""
+    assert fuzzy_match_item("GadgX", db_path=test_db) == "GadgetX"
+
+
+def test_fuzzy_match_ocr_char_swap(test_db):
+    """OCR artifact 'Wedget A' should match WidgetA (ratio ~0.86, needs 0.8 threshold)."""
+    assert fuzzy_match_item("Wedget A", db_path=test_db) == "WidgetA"
+
+
 def test_malformed_input():
     with pytest.raises(FileNotFoundError):
         parse_file("/nonexistent/path/invoice_2003.txt")

@@ -22,20 +22,39 @@ from src.database import init_db
 from src.models.invoice import ApprovalDecision
 from src.models.state import InvoiceState
 from src.tools.file_parser import parse_file
+from src.tools.inventory_db import record_invoice
 
 logger = structlog.get_logger(__name__)
 
 
 def rejection_node(state: InvoiceState) -> dict:
-    """Ensure approval_decision exists and log the rejection."""
+    """Ensure approval_decision exists, record the rejection, and log it."""
     existing = state.get("approval_decision") or {}
+    invoice = state.get("extracted_invoice") or {}
+
+    invoice_number = invoice.get("invoice_number", "UNKNOWN")
+    vendor = invoice.get("vendor_name", "UNKNOWN")
+    amount = float(invoice.get("total_amount") or 0)
+
+    # Record so duplicate detection works on subsequent invoices
+    actual_status = existing.get("status", "rejected") if existing else "rejected"
+    try:
+        record_invoice(
+            invoice_number=invoice_number,
+            vendor=vendor,
+            amount=amount,
+            status=actual_status,
+        )
+    except Exception as e:
+        logger.error("rejection.record_failed", invoice=invoice_number, error=str(e))
+
     result: dict = {
         "current_agent": "rejection",
         "audit_trail": [
             {
                 "agent": "rejection",
-                "action": "rejected",
-                "details": existing.get("reasoning", "Rejected after validation failure"),
+                "action": "recorded_rejection",
+                "details": f"Recorded {invoice_number} as rejected in invoice_history",
             }
         ],
     }

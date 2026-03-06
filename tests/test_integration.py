@@ -74,9 +74,9 @@ def _hitl_invoice(invoice_number: str = "INV-HITL-001") -> dict:
         "vendor_name": "Widgets Inc.",
         "invoice_date": "2026-01-15",
         "due_date": "2026-02-15",
-        "line_items": [{"item_name": "WidgetA", "quantity": 5.0, "unit_price": 250.0,
-                        "line_total": 1250.0, "note": None}],
-        "subtotal": 1250.0, "tax_amount": None, "total_amount": 1250.0,
+        "line_items": [{"item_name": "WidgetA", "quantity": 5.0, "unit_price": 3000.0,
+                        "line_total": 15000.0, "note": None}],
+        "subtotal": 15000.0, "tax_amount": None, "total_amount": 15000.0,
         "currency": "USD", "payment_terms": "Net 30", "notes": None,
         "confidence_scores": {}, "extraction_warnings": [],
     }
@@ -150,7 +150,7 @@ def test_interrupt_and_resume(patch_db, monkeypatch, tmp_path):
     thread_id = str(uuid.uuid4())
 
     f = tmp_path / "invoice_hitl.txt"
-    f.write_text("Vendor: Widgets Inc.\nInvoice: INV-HITL-001\nTotal: $1250")
+    f.write_text("Vendor: Widgets Inc.\nInvoice: INV-HITL-001\nTotal: $15000")
 
     state = process_invoice(pipeline, str(f), thread_id=thread_id)
 

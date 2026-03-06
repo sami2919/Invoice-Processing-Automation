@@ -18,7 +18,7 @@ import structlog
 from langgraph.checkpoint.memory import MemorySaver
 
 from src.config import get_settings
-from src.database import init_db
+from src.database import clear_invoice_history, init_db
 from src.models.audit import BatchResult, ProcessingRecord
 from src.pipeline import build_pipeline, process_invoice, resume_after_human_review
 
@@ -162,20 +162,39 @@ def _prompt_human_decision(review_context: dict) -> tuple[str, str]:
 
 
 def _auto_decide(state: dict) -> tuple[str, str]:
-    """Auto-decide based on risk score for batch mode."""
-    settings = get_settings()
+    """Decide on behalf of human reviewer in batch/auto mode."""
     fraud = state.get("fraud_result") or {}
+    validation = state.get("validation_result") or {}
     risk_score = int(fraud.get("risk_score") or 0)
+    warnings = validation.get("warnings", [])
 
+    settings = get_settings()
+
+    # High risk -> reject
     if risk_score >= settings.high_risk_threshold:
-        return "rejected", f"Auto-rejected: risk {risk_score} >= {settings.high_risk_threshold}"
+        return "rejected", f"Auto-reject: risk score {risk_score} >= {settings.high_risk_threshold}"
+
+    # Medium risk -> escalate for human review
     if risk_score >= settings.medium_risk_threshold:
-        return "escalated", f"Flagged: risk {risk_score} in medium range"
-    return "approved", f"Auto-approved: risk {risk_score} < {settings.medium_risk_threshold}"
+        return "escalated", f"Flagged: medium risk {risk_score}, needs human review"
+
+    # Filter for substantive warnings only
+    ignorable = ("past due", "overdue", "past the due date")
+    substantive_warnings = [
+        w for w in warnings
+        if not any(ign.lower() in w.lower() for ign in ignorable)
+    ]
+
+    if substantive_warnings:
+        return "escalated", f"Flagged for review: {len(substantive_warnings)} warning(s)"
+
+    # Clean -> approve
+    return "approved", "Auto-approved: low risk, no substantive warnings"
 
 
 def run_single_invoice(file_path: str, auto_approve: bool = False) -> ProcessingRecord:
     init_db()
+    clear_invoice_history()
     checkpointer = MemorySaver()
     pipeline = build_pipeline(checkpointer=checkpointer)
     thread_id = str(uuid.uuid4())
@@ -204,11 +223,8 @@ _INVOICE_EXTENSIONS = ("*.txt", "*.json", "*.csv", "*.xml", "*.pdf")
 
 def run_batch(directory: str, auto_approve: bool, fresh: bool = False) -> BatchResult:
     init_db()
-
-    if fresh:
-        from src.database import clear_invoice_history
-        clear_invoice_history()
-        logger.info("batch.cleared_invoice_history")
+    clear_invoice_history()
+    logger.info("batch.cleared_invoice_history")
 
     checkpointer = MemorySaver()
     pipeline = build_pipeline(checkpointer=checkpointer)

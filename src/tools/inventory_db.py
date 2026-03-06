@@ -10,7 +10,7 @@ from src.database import get_db_connection
 
 logger = structlog.get_logger(__name__)
 
-FUZZY_THRESHOLD = 0.9
+FUZZY_THRESHOLD = 0.8
 
 
 def check_item_exists(item_name: str, db_path: str | None = None) -> bool:
@@ -81,21 +81,44 @@ def fuzzy_match_item(item_name: str, db_path: str | None = None) -> Optional[str
 
 
 def check_vendor_approved(vendor_name: str, db_path: str | None = None) -> tuple[bool, dict]:
-    """Check vendor approval status. Returns (is_approved, vendor_info)."""
+    """Check vendor approval status with fuzzy matching fallback.
+    Returns (is_approved, vendor_info)."""
     conn = get_db_connection(db_path)
     try:
+        # exact (case-insensitive) match first
         row = conn.execute(
             "SELECT * FROM vendors WHERE LOWER(name) = LOWER(?)",
             (vendor_name,),
         ).fetchone()
 
-        if row is None:
-            return False, {"found": False, "name": vendor_name}
+        if row is not None:
+            info = dict(row)
+            info["found"] = True
+            info["is_approved"] = bool(info["is_approved"])
+            return info["is_approved"], info
 
-        info = dict(row)
-        info["found"] = True
-        info["is_approved"] = bool(info["is_approved"])
-        return info["is_approved"], info
+        # fuzzy match: normalize spaces/punctuation and compare
+        rows = conn.execute("SELECT * FROM vendors").fetchall()
+        normalized_query = vendor_name.replace(" ", "").lower()
+        best_row = None
+        best_ratio = 0.0
+
+        for r in rows:
+            normalized = r["name"].replace(" ", "").lower()
+            ratio = difflib.SequenceMatcher(None, normalized_query, normalized).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_row = r
+
+        if best_ratio >= FUZZY_THRESHOLD and best_row is not None:
+            logger.debug("fuzzy_vendor_match", query=vendor_name,
+                         match=best_row["name"], ratio=round(best_ratio, 3))
+            info = dict(best_row)
+            info["found"] = True
+            info["is_approved"] = bool(info["is_approved"])
+            return info["is_approved"], info
+
+        return False, {"found": False, "name": vendor_name}
     finally:
         conn.close()
 

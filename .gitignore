@@ -6,3 +6,6 @@ __pycache__/
 .pytest_cache/
 batch_results_*.csv
 .claude/
+HANDOFF.md
+FIX_PLAN.md
+.coverage

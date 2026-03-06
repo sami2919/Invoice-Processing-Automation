@@ -3,6 +3,7 @@
 from src.agents.validation import (
     _check_aggregate_stock,
     _check_currency,
+    _check_dates,
     _check_duplicate,
     _check_math,
     _check_negative_quantities,
@@ -123,3 +124,24 @@ def test_required_fields_all_present():
            "line_items": [{"item_name": "WidgetA", "quantity": 1.0, "unit_price": 250.0}],
            "total_amount": 250.0}
     assert _check_required_fields(inv) == []
+
+
+def test_past_due_not_in_warnings():
+    """Past-due invoices are normal in AP workflows — should NOT appear as a warning."""
+    inv = {
+        "invoice_date": "2025-01-15",
+        "due_date": "2025-06-01",  # in the past
+    }
+    issues, warnings = _check_dates(inv)
+    assert not any("past due" in w.lower() for w in warnings)
+    assert issues == []
+
+
+def test_due_before_invoice_date_is_issue():
+    """Due date before invoice date is a real issue (not just informational)."""
+    inv = {
+        "invoice_date": "2026-03-15",
+        "due_date": "2026-03-01",
+    }
+    issues, warnings = _check_dates(inv)
+    assert any("before invoice date" in i.lower() for i in issues)

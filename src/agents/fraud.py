@@ -14,6 +14,7 @@ from src.tools.inventory_db import (
     check_duplicate_invoice,
     check_item_exists,
     check_vendor_approved,
+    fuzzy_match_item,
     get_item_price,
     get_item_stock,
 )
@@ -56,7 +57,6 @@ def fraud_detection_node(state: InvoiceState) -> dict:
     due_date_raw = extracted.get("due_date")
     invoice_date_raw = extracted.get("invoice_date")
     notes = extracted.get("notes", "") or ""
-    tax_amount: Optional[float] = extracted.get("tax_amount")
 
     signals: list[FraudSignal] = []
 
@@ -74,13 +74,13 @@ def fraud_detection_node(state: InvoiceState) -> dict:
             signal_type="elevated_vendor_risk", severity="medium",
             description=f"Vendor '{vendor}' has risk tier '{risk_tier}'.", weight=15))
 
-    # duplicate invoice (+30)
+    # duplicate invoice (+25)
     is_dup, existing = check_duplicate_invoice(inv_num)
     if is_dup:
         signals.append(FraudSignal(
             signal_type="duplicate_invoice", severity="critical",
             description=f"Invoice '{inv_num}' was already processed on {existing.get('processed_at', 'an earlier date')}.",
-            weight=30))
+            weight=25))
 
     # amount > 3x vendor average (+15)
     hist_avg = float(vendor_info.get("historical_avg_amount", 0.0) or 0.0)
@@ -110,8 +110,20 @@ def fraud_detection_node(state: InvoiceState) -> dict:
             signal_type="missing_due_date", severity="medium",
             description="Invoice has no due date specified.", weight=10))
 
+    # resolve item names via fuzzy matching (consistent with validation agent)
+    resolved_names: dict[str, Optional[str]] = {}
+    for item in line_items:
+        name = item.get("item_name", "")
+        if name not in resolved_names:
+            if check_item_exists(name):
+                resolved_names[name] = name
+            else:
+                resolved_names[name] = fuzzy_match_item(name)
+                if resolved_names[name]:
+                    logger.debug("fraud.fuzzy_item_match", raw=name, resolved=resolved_names[name])
+
     # unknown items (+15)
-    unknown = [i.get("item_name", "") for i in line_items if not check_item_exists(i.get("item_name", ""))]
+    unknown = [name for name, resolved in resolved_names.items() if resolved is None]
     if unknown:
         desc = f"{len(unknown)} item(s) not found in inventory: {', '.join(repr(n) for n in unknown[:3])}"
         if len(unknown) > 3:
@@ -123,12 +135,13 @@ def fraud_detection_node(state: InvoiceState) -> dict:
 
     for item in line_items:
         name = item.get("item_name", "")
+        resolved = resolved_names.get(name)
         qty = float(item.get("quantity", 1))
         price = float(item.get("unit_price", 0.0))
 
         # zero-stock item (+20) — only for items actually in catalog
-        if not zero_stock_fired and check_item_exists(name):
-            if get_item_stock(name) == 0:
+        if not zero_stock_fired and resolved:
+            if get_item_stock(resolved) == 0:
                 signals.append(FraudSignal(
                     signal_type="zero_stock_item", severity="high",
                     description=f"Item '{name}' has zero stock in inventory.", weight=20))
@@ -142,8 +155,8 @@ def fraud_detection_node(state: InvoiceState) -> dict:
             neg_qty_fired = True
 
         # price variance > 20% (+10)
-        if not price_var_fired:
-            db_price = get_item_price(name)
+        if not price_var_fired and resolved:
+            db_price = get_item_price(resolved)
             if db_price > 0 and price > 0:
                 var = abs(price - db_price) / db_price
                 if var > 0.20:
@@ -153,16 +166,16 @@ def fraud_detection_node(state: InvoiceState) -> dict:
                         weight=10))
                     price_var_fired = True
 
-    # math errors (+10)
-    subtotal = sum(
+    # math errors (+10) — compare line-item sum to stated total WITHOUT tax adjustment
+    # (tax discrepancies are themselves a signal worth flagging)
+    calculated_total = sum(
         float(i.get("quantity", 0)) * float(i.get("unit_price", 0.0))
         for i in line_items if float(i.get("quantity", 0)) > 0
     )
-    expected = subtotal + float(tax_amount) if tax_amount is not None else subtotal
-    if total > 0 and abs(expected - total) / total > _MATH_TOLERANCE_PCT:
+    if total > 0 and abs(calculated_total - total) / total > _MATH_TOLERANCE_PCT:
         signals.append(FraudSignal(
             signal_type="math_error", severity="medium",
-            description=f"Calculated total ${expected:,.2f} does not match stated ${total:,.2f} ({abs(expected - total) / total:.1%} diff).",
+            description=f"Calculated total ${calculated_total:,.2f} does not match stated ${total:,.2f} ({abs(calculated_total - total) / total:.1%} diff).",
             weight=10))
 
     # threshold manipulation $9k-$10k (+10)
@@ -193,6 +206,14 @@ def fraud_detection_node(state: InvoiceState) -> dict:
     # aggregate score
     settings = get_settings()
     risk_score = min(sum(s.weight for s in signals), 100)
+
+    # log every signal for debugging (BUG-002 diagnostic)
+    for s in signals:
+        logger.info("fraud.signal", invoice=inv_num, signal=s.signal_type,
+                     weight=s.weight, severity=s.severity, description=s.description)
+    logger.info("fraud.score_breakdown", invoice=inv_num, total_score=risk_score,
+                 signal_count=len(signals),
+                 breakdown={s.signal_type: s.weight for s in signals})
 
     if risk_score >= settings.high_risk_threshold:
         recommendation = "block"

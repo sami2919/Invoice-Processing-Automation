@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     grok_mini_model: str = "grok-3-mini-fast"
 
     # approval thresholds (USD)
-    auto_approve_threshold: float = 1000.0
+    auto_approve_threshold: float = 10000.0
     manager_approval_threshold: float = 10000.0
     director_approval_threshold: float = 25000.0
 
