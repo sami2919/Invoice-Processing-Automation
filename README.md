@@ -1,7 +1,7 @@
 # Invoice Processing AI
 ### Multi-Agent System for Automated Accounts Payable Workflow
 
-A production-grade multi-agent system built with **LangGraph + Grok** that automates the full invoice lifecycle: ingestion → validation → fraud detection → approval → payment → explainability. Includes a Streamlit HITL dashboard, CLI, batch mode, and 49 automated tests.
+A production-grade multi-agent system built with **LangGraph + Grok** that automates the full invoice lifecycle: ingestion → validation → fraud detection → approval → payment → explainability. Includes a Streamlit HITL dashboard, CLI, batch mode, and 180 automated tests.
 
 ---
 
@@ -22,8 +22,8 @@ graph TD
     C -->|Valid| D[Fraud Detection<br/>14 weighted signals<br/>score 0-100]
     C -->|Invalid + retries left| B
     C -->|Invalid + retries exhausted| G[Rejection Node]
-    D --> E[Approval Agent<br/>3 routing paths]
-    E -->|Auto-approve<br/>amount < $1K · risk < 30| F[Payment Agent<br/>mock_payment API]
+    D --> E[Approval Agent<br/>6-step routing]
+    E -->|Auto-approve<br/>amount < $10K · risk < 30| F[Payment Agent<br/>mock_payment API]
     E -->|Human review required| H[HITL Review<br/>LangGraph interrupt]
     E -->|High risk ≥ 70| G
     H -->|Approved| F
@@ -151,7 +151,7 @@ docker run -e XAI_API_KEY=your_key -p 8501:8501 invoice-processor
 | **Batch processing** | Directory scan, parallel thread IDs, auto-approve HITL, CSV export |
 | **Full audit trail** | Every agent action timestamped and persisted in state |
 | **Streamlit UI** | 4-tab dashboard with KPI row, HITL panel, analytics charts |
-| **49 automated tests** | Unit tests (44) + integration tests (5); zero LLM API calls in test suite |
+| **180 automated tests** | Unit + integration tests across 12 test modules; zero LLM API calls in test suite |
 
 ---
 
@@ -228,14 +228,22 @@ galatiq-case-invoices/
 │   │   └── grok_client.py   # ChatXAI wrapper: assess() + get_structured_llm()
 │   ├── pipeline.py          # LangGraph StateGraph assembly + process_invoice()
 │   ├── database.py          # SQLite init, schema, seed data
-│   └── config.py            # pydantic-settings: thresholds, model names
+│   ├── config.py            # pydantic-settings: thresholds, model names
+│   └── theme.py             # Dark executive dashboard styling
 ├── tests/
 │   ├── conftest.py          # Fixtures: test_db, patch_db, mock_grok, pipeline
-│   ├── test_extraction.py   # 11 unit tests: parse formats, fuzzy match, OCR
-│   ├── test_validation.py   # 14 unit tests: each check function
-│   ├── test_fraud.py        # 9 unit tests: each fraud signal
-│   ├── test_pipeline.py     # 9 unit tests: routing, compilation, recursion limit
-│   └── test_integration.py  # 5 E2E tests: happy path, rejection, HITL, retry, batch
+│   ├── test_extraction.py   # Extraction: parse formats, fuzzy match, OCR
+│   ├── test_validation.py   # Validation: each check function
+│   ├── test_fraud.py        # Fraud: each weighted signal
+│   ├── test_approval.py     # Approval: 6-step routing logic
+│   ├── test_auto_decide.py  # HITL auto-decide: risk + warning handling
+│   ├── test_batch_dedup.py  # Batch: stem-based file deduplication
+│   ├── test_rejection_recording.py  # Rejection: invoice history recording
+│   ├── test_grok_client.py  # LLM client: ChatXAI wrapper
+│   ├── test_pdf_extractor.py # PDF: pdfplumber extraction
+│   ├── test_theme.py        # Theme: styling helpers
+│   ├── test_pipeline.py     # Pipeline: routing, compilation, recursion limit
+│   └── test_integration.py  # E2E: happy path, rejection, HITL, retry, batch
 ├── data/invoices/           # 21 test invoices (TXT, JSON, CSV, XML, PDF)
 ├── main.py                  # CLI: single invoice + batch mode
 ├── app.py                   # Streamlit dashboard (4 tabs + sidebar)
