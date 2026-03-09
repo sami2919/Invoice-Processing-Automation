@@ -1,12 +1,12 @@
 # Invoice Processing AI — Multi-Agent System for Automated AP Workflow
 
-A production-ready multi-agent pipeline built with **LangGraph + Grok** that automates the full accounts-payable workflow: invoice ingestion → extraction → validation → fraud detection → approval → payment → audit trail. Includes a Streamlit HITL dashboard, CLI, batch mode, and 180 automated tests.
+A production-ready multi-agent pipeline built with **LangGraph + Grok** that automates the full accounts-payable workflow: invoice ingestion → extraction → validation → fraud detection → approval → payment → audit trail. Includes a Flask HITL dashboard, CLI, and batch mode.
 
 ---
 
 ## Business Context
 
-A PE-backed manufacturer was losing over $2M/year to manual invoice processing — a 5-day cycle time, a 30% error rate on line-item validation, and no systematic fraud detection. Duplicate invoices alone accounted for an estimated 2% in overpayments. This system replaces the manual workflow with a multi-agent AI pipeline that extracts structured data from any invoice format, runs deterministic business-rule checks, scores fraud risk across 14 signals, and routes borderline cases to a human reviewer in a purpose-built Streamlit interface — all in under 30 seconds per invoice.
+A PE-backed manufacturer was losing over $2M/year to manual invoice processing — a 5-day cycle time, a 30% error rate on line-item validation, and no systematic fraud detection. Duplicate invoices alone accounted for an estimated 2% in overpayments. This system replaces the manual workflow with a multi-agent AI pipeline that extracts structured data from any invoice format, runs deterministic business-rule checks, scores fraud risk across 14 signals, and routes borderline cases to a human reviewer in a purpose-built web interface — all in under 30 seconds per invoice.
 
 ---
 
@@ -37,8 +37,6 @@ graph TD
     style G fill:#ffebee,stroke:#F44336
 ```
 
-![Pipeline Diagram](pipeline_diagram.png)
-
 The pipeline follows a directed workflow with self-correction loops:
 
 1. **Extraction Agent** — Grok structured output with OCR correction and fuzzy item matching
@@ -54,7 +52,7 @@ Routing includes retry loops (up to 3 attempts with structured feedback) for ext
 
 ## Key Design Decision
 
-LangGraph's `StateGraph` with conditional edges maps perfectly to this pipeline's cyclic structure — the self-correction loop (validate → retry → re-extract) and multi-path approval routing are first-class concepts, not bolted-on workarounds. The `interrupt()` mechanism genuinely pauses the state machine and persists the checkpoint via `MemorySaver`, enabling real HITL review in the Streamlit UI rather than simulating it with random decisions. Grok is accessed via `langchain-xai` (`ChatXAI` with `with_structured_output()`), making model swaps a one-line config change. Business rules (stock checks, math verification, duplicate detection) are pure Python with SQLite — the LLM is only called where it adds real value: unstructured text parsing, risk narratives, and plain-English summaries.
+LangGraph's `StateGraph` with conditional edges maps perfectly to this pipeline's cyclic structure — the self-correction loop (validate → retry → re-extract) and multi-path approval routing are first-class concepts, not bolted-on workarounds. The `interrupt()` mechanism genuinely pauses the state machine and persists the checkpoint via `MemorySaver`, enabling real HITL review in the web UI rather than simulating it with random decisions. Grok is accessed via `langchain-xai` (`ChatXAI` with `with_structured_output()`), making model swaps a one-line config change. Business rules (stock checks, math verification, duplicate detection) are pure Python with SQLite — the LLM is only called where it adds real value: unstructured text parsing, risk narratives, and plain-English summaries.
 
 ---
 
@@ -93,9 +91,9 @@ python main.py --batch data/invoices/ --auto-approve
 python main.py --invoice_path data/invoices/invoice_1001.txt --auto-approve
 ```
 
-**Streamlit UI (recommended for demos)**
+**Web dashboard (recommended for demos)**
 ```bash
-streamlit run app.py
+python web.py
 # Opens at http://localhost:8501
 ```
 
@@ -117,7 +115,7 @@ docker run -p 8501:8501 -e XAI_API_KEY=xai-your-key invoice-ai
 | **OCR artifact handling** | Letter-O vs zero, mangled decimals — corrected at extraction time |
 | **Fuzzy item matching** | `difflib.SequenceMatcher` at 0.8 threshold maps "Widget A" → "WidgetA" |
 | **Composite fraud scoring** | 14 weighted signals, score 0–100, three tiers: auto-approve / flag / block |
-| **Human-in-the-loop** | LangGraph `interrupt()` + `MemorySaver` checkpointing — genuine pause/resume via Streamlit review panel |
+| **Human-in-the-loop** | LangGraph `interrupt()` + `MemorySaver` checkpointing — genuine pause/resume via web review panel |
 | **Duplicate detection** | Invoice number cross-checked against `invoice_history` table (recorded on both approval and rejection) |
 | **Aggregate stock check** | Sums quantities per item across all line items before comparing to inventory stock |
 | **Currency enforcement** | Flags non-USD invoices for review |
@@ -125,7 +123,7 @@ docker run -p 8501:8501 -e XAI_API_KEY=xai-your-key invoice-ai
 | **VP-readable explanations** | Grok generates plain-English summaries of every decision |
 | **Batch processing** | Directory scan with stem-based dedup, progress bar, colour-coded results, CSV export |
 | **Full audit trail** | Every agent action recorded with timestamp, duration, and confidence |
-| **Streamlit dashboard** | 4-tab UI: process, batch, analytics, audit trail + sidebar with settings and pipeline diagram |
+| **Web dashboard** | 4-tab UI: process, batch, analytics, audit trail + settings drawer |
 
 ---
 
@@ -176,11 +174,10 @@ python main.py --batch data/invoices/ --auto-approve
 
 ```bash
 pytest tests/ -v
-# 180 tests across 12 modules — validation, fraud scoring, approval routing,
-# HITL auto-decide, batch dedup, rejection recording, extraction, pipeline routing
+# 46 tests across 4 modules — extraction, validation, pipeline routing, E2E integration
 ```
 
-Tests are fully isolated — an in-memory SQLite database is spun up per test session and all Grok API calls are mocked. No API key required to run the test suite.
+Tests are fully isolated — an in-memory SQLite database is spun up per test and all Grok API calls are mocked. No API key required to run the test suite.
 
 ---
 
@@ -198,58 +195,23 @@ Framed through Galatiq's forward-deployment model:
 
 ---
 
-## Personal Context
-
-Having worked on AI systems for real-world operations, I expanded the case assumptions based on patterns observed in actual AP workflows — duplicate invoices submitted under slightly different formats, multi-currency procurement, aggregate quantity mismatches across split purchase orders, and the critical need for explainable risk scoring that finance teams actually trust. The test invoice set was designed to surface these real-world failure modes rather than just the obvious happy path. The 6-step approval routing and warning-aware HITL auto-decide logic reflect the nuance required when deploying AI into regulated financial processes where false rejections are as costly as false approvals.
-
----
-
 ## Project Structure
 
 ```
-Invoice-Processing-Automation/
-├── app.py                    # Streamlit UI (4 tabs: Process, Batch, Analytics, Audit)
-├── main.py                   # CLI entry point (single + batch modes)
+├── web.py                        # Flask dashboard (process, batch, analytics, audit)
+├── main.py                       # CLI entry point (single + batch modes)
+├── templates/dashboard.html      # Tailwind + Chart.js UI
 ├── src/
-│   ├── agents/
-│   │   ├── extraction.py     # Grok JSON extraction + OCR correction + self-correction loop
-│   │   ├── validation.py     # Deterministic DB checks (no LLM)
-│   │   ├── fraud.py          # 14-signal composite risk scorer + Grok narrative
-│   │   ├── approval.py       # 6-step routing + LangGraph interrupt() for HITL
-│   │   ├── payment.py        # Mock payment + invoice history recording
-│   │   └── explanation.py    # Grok VP-level decision summary
-│   ├── models/
-│   │   ├── invoice.py        # ExtractedInvoice, LineItem, FraudResult, ApprovalDecision
-│   │   ├── state.py          # InvoiceState TypedDict (LangGraph state)
-│   │   └── audit.py          # ProcessingRecord, BatchResult
-│   ├── llm/
-│   │   └── grok_client.py    # ChatXAI wrapper: assess() + get_structured_llm()
-│   ├── tools/
-│   │   ├── inventory_db.py   # SQLite queries (vendor, item, stock, duplicate checks)
-│   │   ├── file_parser.py    # Multi-format invoice parser
-│   │   ├── payment_api.py    # Mock payment API
-│   │   └── pdf_extractor.py  # pdfplumber wrapper
-│   ├── pipeline.py           # LangGraph StateGraph assembly + process_invoice()
-│   ├── config.py             # pydantic-settings (all thresholds + API config)
-│   ├── database.py           # Schema creation + seed data (WAL mode)
-│   └── theme.py              # Dark executive dashboard styling
-├── tests/
-│   ├── conftest.py           # Isolated DB + invoice fixtures
-│   ├── test_extraction.py    # Extraction: parse formats, fuzzy match, OCR
-│   ├── test_validation.py    # Validation: each check function
-│   ├── test_fraud.py         # Fraud: each weighted signal
-│   ├── test_approval.py      # Approval: 6-step routing logic
-│   ├── test_auto_decide.py   # HITL auto-decide: risk + warning handling
-│   ├── test_batch_dedup.py   # Batch: stem-based file deduplication
-│   ├── test_rejection_recording.py  # Rejection: invoice history recording
-│   ├── test_grok_client.py   # LLM client: ChatXAI wrapper
-│   ├── test_pdf_extractor.py # PDF: pdfplumber extraction
-│   ├── test_theme.py         # Theme: styling helpers
-│   ├── test_pipeline.py      # Pipeline: routing, compilation, recursion limit
-│   └── test_integration.py   # E2E: happy path, rejection, HITL, retry, batch
-├── data/invoices/            # 21 test invoices (TXT, JSON, CSV, XML, PDF)
-├── Dockerfile                # Python 3.11-slim, Streamlit on 8501
+│   ├── agents/                   # extraction, validation, fraud, approval, payment, explanation
+│   ├── models/                   # Pydantic schemas (invoice, state, audit)
+│   ├── llm/grok_client.py       # ChatXAI wrapper
+│   ├── tools/                    # inventory_db, file_parser, payment_api, pdf_extractor
+│   ├── pipeline.py               # LangGraph graph assembly
+│   ├── config.py                 # pydantic-settings (thresholds + API config)
+│   └── database.py               # SQLite schema + seed data
+├── tests/                        # extraction, validation, pipeline routing, E2E integration
+├── data/invoices/                # 20 test invoices (TXT, JSON, CSV, XML, PDF)
+├── Dockerfile
 ├── requirements.txt
-├── pyproject.toml
-└── .env.example              # API key + threshold configuration
+└── .env.example
 ```

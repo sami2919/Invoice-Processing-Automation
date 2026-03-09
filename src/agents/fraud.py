@@ -1,4 +1,4 @@
-"""Fraud detection — 14 weighted signals scored deterministically, with an LLM narrative."""
+"""Fraud detection agent — scores invoices against weighted risk signals."""
 
 import re
 from datetime import date, datetime, timezone
@@ -60,21 +60,18 @@ def fraud_detection_node(state: InvoiceState) -> dict:
 
     signals: list[FraudSignal] = []
 
-    # unknown vendor (+20)
     is_approved, vendor_info = check_vendor_approved(vendor)
     if not vendor_info.get("found", False):
         signals.append(FraudSignal(
             signal_type="unknown_vendor", severity="high",
             description=f"Vendor '{vendor}' is not in the approved vendor list.", weight=20))
 
-    # elevated/blocked vendor (+15)
     risk_tier = vendor_info.get("risk_tier", "standard")
     if vendor_info.get("found") and risk_tier in ("elevated", "blocked"):
         signals.append(FraudSignal(
             signal_type="elevated_vendor_risk", severity="medium",
             description=f"Vendor '{vendor}' has risk tier '{risk_tier}'.", weight=15))
 
-    # duplicate invoice (+25)
     is_dup, existing = check_duplicate_invoice(inv_num)
     if is_dup:
         signals.append(FraudSignal(
@@ -82,7 +79,6 @@ def fraud_detection_node(state: InvoiceState) -> dict:
             description=f"Invoice '{inv_num}' was already processed on {existing.get('processed_at', 'an earlier date')}.",
             weight=25))
 
-    # amount > 3x vendor average (+15)
     hist_avg = float(vendor_info.get("historical_avg_amount", 0.0) or 0.0)
     if vendor_info.get("found") and hist_avg > 0 and total > 3 * hist_avg:
         signals.append(FraudSignal(
@@ -90,7 +86,6 @@ def fraud_detection_node(state: InvoiceState) -> dict:
             description=f"Invoice amount ${total:,.2f} exceeds 3x vendor average (${hist_avg:,.2f}).",
             weight=15))
 
-    # urgency / social engineering (+15)
     matches = _URGENCY_RE.findall(f"{raw_text} {notes}")
     if matches:
         terms = list(dict.fromkeys(m.lower() for m in matches))
@@ -98,19 +93,16 @@ def fraud_detection_node(state: InvoiceState) -> dict:
             signal_type="urgency_language", severity="high",
             description=f"Social-engineering language detected: {', '.join(terms)}.", weight=15))
 
-    # round amount (+5)
     if total > 0 and total % 1000 == 0:
         signals.append(FraudSignal(
             signal_type="round_amount", severity="low",
             description=f"Invoice total ${total:,.2f} is a suspiciously round number.", weight=5))
 
-    # missing due date (+10)
     if not due_date_raw:
         signals.append(FraudSignal(
             signal_type="missing_due_date", severity="medium",
             description="Invoice has no due date specified.", weight=10))
 
-    # resolve item names via fuzzy matching (consistent with validation agent)
     resolved_names: dict[str, Optional[str]] = {}
     for item in line_items:
         name = item.get("item_name", "")
@@ -122,7 +114,6 @@ def fraud_detection_node(state: InvoiceState) -> dict:
                 if resolved_names[name]:
                     logger.debug("fraud.fuzzy_item_match", raw=name, resolved=resolved_names[name])
 
-    # unknown items (+15)
     unknown = [name for name, resolved in resolved_names.items() if resolved is None]
     if unknown:
         desc = f"{len(unknown)} item(s) not found in inventory: {', '.join(repr(n) for n in unknown[:3])}"
@@ -130,7 +121,6 @@ def fraud_detection_node(state: InvoiceState) -> dict:
             desc += f" (+{len(unknown) - 3} more)"
         signals.append(FraudSignal(signal_type="unknown_items", severity="medium", description=desc, weight=15))
 
-    # per-item signals (fire at most once each)
     zero_stock_fired = neg_qty_fired = price_var_fired = False
 
     for item in line_items:
@@ -139,7 +129,6 @@ def fraud_detection_node(state: InvoiceState) -> dict:
         qty = float(item.get("quantity", 1))
         price = float(item.get("unit_price", 0.0))
 
-        # zero-stock item (+20) — only for items actually in catalog
         if not zero_stock_fired and resolved:
             if get_item_stock(resolved) == 0:
                 signals.append(FraudSignal(
@@ -147,14 +136,12 @@ def fraud_detection_node(state: InvoiceState) -> dict:
                     description=f"Item '{name}' has zero stock in inventory.", weight=20))
                 zero_stock_fired = True
 
-        # negative/zero qty (+15)
         if not neg_qty_fired and qty <= 0:
             signals.append(FraudSignal(
                 signal_type="negative_quantity", severity="high",
                 description=f"Line item '{name}' has non-positive quantity ({qty}).", weight=15))
             neg_qty_fired = True
 
-        # price variance > 20% (+10)
         if not price_var_fired and resolved:
             db_price = get_item_price(resolved)
             if db_price > 0 and price > 0:
@@ -166,8 +153,7 @@ def fraud_detection_node(state: InvoiceState) -> dict:
                         weight=10))
                     price_var_fired = True
 
-    # math errors (+10) — compare line-item sum to stated total WITHOUT tax adjustment
-    # (tax discrepancies are themselves a signal worth flagging)
+    # compare line-item sum to stated total (no tax adjustment — that's its own signal)
     calculated_total = sum(
         float(i.get("quantity", 0)) * float(i.get("unit_price", 0.0))
         for i in line_items if float(i.get("quantity", 0)) > 0
@@ -178,14 +164,12 @@ def fraud_detection_node(state: InvoiceState) -> dict:
             description=f"Calculated total ${calculated_total:,.2f} does not match stated ${total:,.2f} ({abs(calculated_total - total) / total:.1%} diff).",
             weight=10))
 
-    # threshold manipulation $9k-$10k (+10)
     if 9000.0 <= total <= 9999.99:
         signals.append(FraudSignal(
             signal_type="threshold_manipulation", severity="medium",
             description=f"Invoice amount ${total:,.2f} falls in the $9,000-$9,999.99 threshold-evasion range.",
             weight=10))
 
-    # future invoice date (+10)
     today = _today()
     if invoice_date_raw:
         try:
@@ -197,17 +181,14 @@ def fraud_detection_node(state: InvoiceState) -> dict:
         except (ValueError, TypeError):
             pass
 
-    # suspicious vendor name (+10)
     if _SUSPICIOUS_VENDOR_RE.search(vendor):
         signals.append(FraudSignal(
             signal_type="suspicious_vendor_name", severity="high",
             description=f"Vendor name '{vendor}' contains suspicious keywords.", weight=10))
 
-    # aggregate score
     settings = get_settings()
     risk_score = min(sum(s.weight for s in signals), 100)
 
-    # log every signal for debugging (BUG-002 diagnostic)
     for s in signals:
         logger.info("fraud.signal", invoice=inv_num, signal=s.signal_type,
                      weight=s.weight, severity=s.severity, description=s.description)

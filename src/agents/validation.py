@@ -1,5 +1,4 @@
-"""Validation agent — deterministic rule-based checks against the inventory DB.
-No LLM calls. All logic is pure Python + SQLite for speed and auditability."""
+"""Validation agent — checks extracted invoice data against the inventory DB."""
 
 import time
 from collections import defaultdict
@@ -200,8 +199,6 @@ def _check_dates(inv: dict) -> tuple[list[str], list[str]]:
 
     if inv_date and inv_date > today and (inv_date - today).days > FUTURE_DATE_DAYS:
         warnings.append(f"Invoice date {inv_date} is {(inv_date - today).days} days in the future")
-    # Past-due invoices are normal in AP workflows — not a validation signal.
-    # Removed: past-due warning was causing false rejections.
     if inv_date and due and due < inv_date:
         issues.append(f"Due date {due} is before invoice date {inv_date}")
     return issues, warnings

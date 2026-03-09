@@ -1,4 +1,4 @@
-"""Deterministic DB queries for validation — no LLM calls."""
+"""SQLite inventory and vendor queries."""
 
 import difflib
 from datetime import datetime, timezone

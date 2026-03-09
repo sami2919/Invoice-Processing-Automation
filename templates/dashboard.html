@@ -1,0 +1,1126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Invoice Processing AI</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script>
+    tailwindcss.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Plus Jakarta Sans', 'system-ui', 'sans-serif'] },
+          colors: {
+            navy: '#0F172A',
+            panel: '#1E293B',
+            'panel-light': '#334155',
+            accent: '#3B82F6',
+            'accent-hover': '#2563EB',
+            ok: '#059669',
+            'ok-light': '#ECFDF5',
+            bad: '#DC2626',
+            'bad-light': '#FEF2F2',
+            warn: '#D97706',
+            'warn-light': '#FFFBEB',
+            dim: '#94A3B8',
+            edge: '#334155',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    html { scroll-behavior: smooth; }
+    /* Critical base styles — always applied even if Tailwind CDN fails */
+    body {
+      font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+      background-color: #0F172A;
+      color: #CBD5E1;
+      margin: 0;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+    }
+    .tab-btn.active { background: #3B82F6; color: #fff; box-shadow: 0 1px 3px rgba(59,130,246,0.3); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .drop-zone.drag-over { border-color: #3B82F6; background: rgba(59,130,246,0.05); }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .spinner { animation: spin 0.8s linear infinite; }
+    @keyframes pulse-dot { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #0F172A; }
+    ::-webkit-scrollbar-thumb { background: #334155; border-radius: 3px; }
+    ::-webkit-scrollbar-thumb:hover { background: #475569; }
+    /* Custom focus */
+    input:focus, textarea:focus, select:focus, button:focus-visible {
+      outline: 2px solid #3B82F6;
+      outline-offset: 2px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header style="background: linear-gradient(135deg, #0F172A 0%, #1E293B 60%, rgba(59,130,246,0.15) 100%); border-bottom: 1px solid #334155; padding: 20px 0;">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between">
+      <div>
+        <h1 class="text-xl font-bold text-white tracking-tight m-0">Invoice Processing AI</h1>
+        <p class="text-sm text-dim mt-0.5 m-0">Automated extraction, validation, fraud detection & approval</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="flex items-center gap-2 px-3 py-1.5 rounded-full text-xs font-semibold" style="background: rgba(5,150,105,0.1); color: #34D399;">
+          <span class="w-2 h-2 rounded-full pulse-dot" style="background: #34D399;"></span>
+          System Online
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
+
+    <!-- KPI Row -->
+    <div id="kpi-row" class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+      <div class="rounded-lg p-5" style="background: #1E293B; border: 1px solid #334155; border-left: 4px solid #3B82F6;">
+        <div class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: #94A3B8;">Total Processed</div>
+        <div id="kpi-total" class="text-3xl font-bold text-white">0</div>
+      </div>
+      <div class="rounded-lg p-5" style="background: #1E293B; border: 1px solid #334155; border-left: 4px solid #059669;">
+        <div class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: #94A3B8;">Auto-Approved</div>
+        <div id="kpi-approved" class="text-3xl font-bold text-white">0%</div>
+        <div id="kpi-approved-sub" class="text-sm mt-1" style="color: #94A3B8;"></div>
+      </div>
+      <div class="rounded-lg p-5" style="background: #1E293B; border: 1px solid #334155; border-left: 4px solid #D97706;">
+        <div class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: #94A3B8;">Flagged for Review</div>
+        <div id="kpi-flagged" class="text-3xl font-bold text-white">0</div>
+      </div>
+      <div class="rounded-lg p-5" id="kpi-risk-card" style="background: #1E293B; border: 1px solid #334155; border-left: 4px solid #94A3B8;">
+        <div class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: #94A3B8;">Avg Risk Score</div>
+        <div id="kpi-risk" class="text-3xl font-bold text-white">0/100</div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="rounded-xl p-1 mb-6 flex gap-1 overflow-x-auto" style="background: #1E293B; border: 1px solid #334155;">
+      <button class="tab-btn active flex-1 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-150 cursor-pointer whitespace-nowrap" data-tab="process">
+        Process Invoice
+      </button>
+      <button class="tab-btn flex-1 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-150 cursor-pointer whitespace-nowrap" style="color: #94A3B8;" data-tab="batch">
+        Batch Processing
+      </button>
+      <button class="tab-btn flex-1 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-150 cursor-pointer whitespace-nowrap" style="color: #94A3B8;" data-tab="analytics">
+        Analytics
+      </button>
+      <button class="tab-btn flex-1 px-4 py-2.5 rounded-lg text-sm font-semibold transition-all duration-150 cursor-pointer whitespace-nowrap" style="color: #94A3B8;" data-tab="audit">
+        Audit Trail
+      </button>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- TAB 1: Process Invoice -->
+    <!-- ================================================================== -->
+    <div id="tab-process" class="tab-content active">
+      <div class="grid lg:grid-cols-5 gap-6">
+
+        <!-- Left: Input -->
+        <div class="lg:col-span-3">
+          <div class="mb-4">
+            <h2 class="text-base font-bold text-white m-0">Invoice Input</h2>
+            <p class="text-sm m-0 mt-1" style="color: #94A3B8;">Upload a file or enter a path to process</p>
+          </div>
+
+          <!-- Drop zone -->
+          <div id="drop-zone" class="drop-zone rounded-xl p-8 text-center mb-4 transition-colors duration-200 cursor-pointer" style="border: 2px dashed #334155;">
+            <svg class="w-10 h-10 mx-auto mb-3" style="color: #94A3B8;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+            </svg>
+            <p class="text-sm mb-1" style="color: #94A3B8;">Drop invoice file here or click to browse</p>
+            <p class="text-xs" style="color: #64748B;">TXT, JSON, CSV, XML, PDF</p>
+            <input type="file" id="file-input" class="hidden" accept=".txt,.json,.csv,.xml,.pdf,text/plain,application/json,text/csv,application/xml,text/xml,application/pdf">
+          </div>
+          <div id="file-name" class="hidden text-sm mb-3 flex items-center gap-2" style="color: #3B82F6;">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            <span id="file-name-text"></span>
+            <button id="file-clear" class="cursor-pointer ml-1" style="color: #94A3B8;" aria-label="Clear file">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
+
+          <!-- Or path -->
+          <div class="flex items-center gap-3 mb-4">
+            <span class="text-xs uppercase tracking-wider" style="color: #94A3B8;">or</span>
+            <div class="flex-1 h-px" style="background: #334155;"></div>
+          </div>
+          <div class="mb-4">
+            <label for="path-input" class="block text-sm font-medium mb-1.5" style="color: #CBD5E1;">File path</label>
+            <input id="path-input" type="text" placeholder="data/invoices/invoice_1001.txt"
+              class="w-full rounded-lg px-4 py-2.5 text-sm text-white outline-none transition-colors duration-150"
+              style="background: #0F172A; border: 1px solid #334155;"
+              onfocus="this.style.borderColor='#3B82F6'" onblur="this.style.borderColor='#334155'">
+          </div>
+
+          <button id="process-btn"
+            class="font-semibold px-6 py-2.5 rounded-lg transition-colors duration-150 cursor-pointer flex items-center gap-2"
+            style="background: #3B82F6; color: #fff;"
+            onmouseover="this.style.background='#2563EB'" onmouseout="this.style.background='#3B82F6'">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            Process Invoice
+          </button>
+        </div>
+
+        <!-- Right: Pipeline progress & results -->
+        <div class="lg:col-span-2">
+          <div class="mb-4">
+            <h2 class="text-base font-bold text-white m-0">Pipeline Progress</h2>
+          </div>
+
+          <!-- Agent viz -->
+          <div id="agent-viz" class="rounded-xl p-5" style="background: #1E293B; border: 1px solid #334155;">
+            <div id="agent-placeholder" class="text-center py-6">
+              <p class="text-sm" style="color: #94A3B8;">Upload an invoice and click Process to begin.</p>
+            </div>
+            <div id="agent-steps" class="hidden space-y-0"></div>
+          </div>
+
+          <!-- Processing spinner -->
+          <div id="processing-status" class="hidden mt-4 rounded-xl p-4 flex items-center gap-3" style="background: #1E293B; border: 1px solid #334155;">
+            <div class="w-5 h-5 rounded-full spinner" style="border: 2px solid #3B82F6; border-top-color: transparent;"></div>
+            <span id="processing-text" class="text-sm" style="color: #CBD5E1;">Processing invoice...</span>
+          </div>
+
+          <!-- HITL Review Panel -->
+          <div id="hitl-panel" class="hidden mt-4">
+            <div class="rounded-xl p-4 mb-4" style="background: rgba(217,119,6,0.1); border: 1px solid rgba(217,119,6,0.3);">
+              <div class="font-bold text-sm" style="color: #D97706;">Human Review Required</div>
+              <div class="text-xs mt-0.5" style="color: #94A3B8;">This invoice requires manual approval before proceeding.</div>
+            </div>
+            <div class="rounded-xl p-5 mb-4" style="background: #1E293B; border: 1px solid #334155;">
+              <div class="flex flex-wrap gap-5 mb-4">
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wider" style="color: #94A3B8;">Invoice</div>
+                  <div id="hitl-invoice" class="text-white font-semibold mt-0.5">—</div>
+                </div>
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wider" style="color: #94A3B8;">Vendor</div>
+                  <div id="hitl-vendor" class="text-white font-semibold mt-0.5">—</div>
+                </div>
+                <div>
+                  <div class="text-xs font-semibold uppercase tracking-wider" style="color: #94A3B8;">Amount</div>
+                  <div id="hitl-amount" class="text-white font-semibold mt-0.5">—</div>
+                </div>
+              </div>
+              <div class="flex items-center gap-3 flex-wrap">
+                <span class="text-sm" style="color: #94A3B8;">Risk:</span>
+                <span id="hitl-risk-badge"></span>
+                <span class="text-sm ml-2" style="color: #94A3B8;">Recommendation:</span>
+                <span id="hitl-rec-badge"></span>
+              </div>
+            </div>
+            <div id="hitl-narrative" class="hidden rounded-lg p-4 mb-4 text-sm" style="background: rgba(59,130,246,0.05); border: 1px solid rgba(59,130,246,0.2); color: #CBD5E1;"></div>
+            <div id="hitl-signals" class="hidden mb-4">
+              <div class="text-sm font-semibold text-white mb-2">Fraud Signals</div>
+              <ul id="hitl-signals-list" class="text-sm space-y-1 list-disc pl-5" style="color: #CBD5E1;"></ul>
+            </div>
+            <div id="hitl-issues" class="hidden mb-4">
+              <div class="text-sm font-semibold text-white mb-2">Validation Issues</div>
+              <ul id="hitl-issues-list" class="text-sm space-y-1 list-disc pl-5" style="color: #CBD5E1;"></ul>
+            </div>
+            <div class="mb-4">
+              <label for="hitl-reasoning" class="block text-sm font-medium mb-1.5" style="color: #CBD5E1;">Reasoning (optional)</label>
+              <textarea id="hitl-reasoning" rows="2" placeholder="Explain your decision..."
+                class="w-full rounded-lg px-4 py-2.5 text-sm text-white outline-none resize-none transition-colors duration-150"
+                style="background: #0F172A; border: 1px solid #334155;"
+                onfocus="this.style.borderColor='#3B82F6'" onblur="this.style.borderColor='#334155'"></textarea>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <button id="hitl-approve"
+                class="text-white font-semibold py-2.5 rounded-lg transition-colors duration-150 cursor-pointer"
+                style="background: #059669;">
+                Approve
+              </button>
+              <button id="hitl-reject"
+                class="text-white font-semibold py-2.5 rounded-lg transition-colors duration-150 cursor-pointer"
+                style="background: #1E293B; border: 1px solid #334155;">
+                Reject
+              </button>
+            </div>
+          </div>
+
+          <!-- Result banner -->
+          <div id="result-banner" class="hidden mt-4"></div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- TAB 2: Batch Processing -->
+    <!-- ================================================================== -->
+    <div id="tab-batch" class="tab-content">
+      <div class="mb-4">
+        <h2 class="text-base font-bold text-white m-0">Batch Processing</h2>
+        <p class="text-sm m-0 mt-1" style="color: #94A3B8;">Upload files or process from a directory</p>
+      </div>
+
+      <!-- Batch file upload drop zone -->
+      <div id="batch-drop-zone" class="drop-zone rounded-xl p-8 text-center mb-4 transition-colors duration-200 cursor-pointer" style="border: 2px dashed #334155;">
+        <svg class="w-10 h-10 mx-auto mb-3" style="color: #94A3B8;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/>
+        </svg>
+        <p class="text-sm mb-1" style="color: #94A3B8;">Drop invoice files here or click to browse</p>
+        <p class="text-xs" style="color: #64748B;">TXT, JSON, CSV, XML, PDF &mdash; select multiple files</p>
+        <input type="file" id="batch-file-input" class="hidden" multiple accept=".txt,.json,.csv,.xml,.pdf,text/plain,application/json,text/csv,application/xml,text/xml,application/pdf">
+      </div>
+      <div id="batch-file-list" class="hidden mb-4">
+        <div class="flex items-center gap-2 mb-2">
+          <span class="text-sm font-medium" style="color: #3B82F6;">Selected files:</span>
+          <button id="batch-file-clear" class="text-xs cursor-pointer px-2 py-0.5 rounded" style="color: #94A3B8; background: #1E293B;">Clear all</button>
+        </div>
+        <div id="batch-file-names" class="text-sm space-y-1" style="color: #CBD5E1;"></div>
+      </div>
+
+      <!-- Or directory path -->
+      <div class="flex items-center gap-3 mb-4">
+        <span class="text-xs uppercase tracking-wider" style="color: #94A3B8;">or</span>
+        <div class="flex-1 h-px" style="background: #334155;"></div>
+      </div>
+
+      <div class="flex flex-wrap items-end gap-4 mb-6">
+        <div class="flex-1 min-w-[200px]">
+          <label for="batch-dir" class="block text-sm font-medium mb-1.5" style="color: #CBD5E1;">Invoice directory</label>
+          <input id="batch-dir" type="text" value="data/invoices"
+            class="w-full rounded-lg px-4 py-2.5 text-sm text-white outline-none transition-colors duration-150"
+            style="background: #0F172A; border: 1px solid #334155;"
+            onfocus="this.style.borderColor='#3B82F6'" onblur="this.style.borderColor='#334155'">
+        </div>
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" id="batch-auto" checked class="w-4 h-4 rounded cursor-pointer accent-blue-500">
+          <span class="text-sm" style="color: #CBD5E1;">Auto-approve HITL</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" id="batch-fresh" checked class="w-4 h-4 rounded cursor-pointer accent-blue-500">
+          <span class="text-sm" style="color: #CBD5E1;">Fresh run</span>
+        </label>
+        <button id="batch-btn"
+          class="font-semibold px-6 py-2.5 rounded-lg transition-colors duration-150 cursor-pointer flex items-center gap-2"
+          style="background: #3B82F6; color: #fff;"
+          onmouseover="this.style.background='#2563EB'" onmouseout="this.style.background='#3B82F6'">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          Process All
+        </button>
+      </div>
+
+      <!-- Batch progress -->
+      <div id="batch-progress" class="hidden mb-6">
+        <div class="flex items-center gap-3 mb-2">
+          <div class="w-5 h-5 rounded-full spinner" style="border: 2px solid #3B82F6; border-top-color: transparent;"></div>
+          <span id="batch-progress-text" class="text-sm" style="color: #CBD5E1;">Processing...</span>
+        </div>
+        <div class="w-full rounded-full h-2" style="background: #0F172A;">
+          <div id="batch-progress-bar" class="h-2 rounded-full transition-all duration-300" style="width: 0%; background: #3B82F6;"></div>
+        </div>
+      </div>
+
+      <!-- Batch KPIs -->
+      <div id="batch-kpis" class="hidden grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6"></div>
+
+      <!-- Batch table -->
+      <div id="batch-table-wrap" class="hidden">
+        <div class="rounded-xl overflow-hidden" style="background: #1E293B; border: 1px solid #334155;">
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm text-left">
+              <thead style="background: #334155;">
+                <tr class="text-xs uppercase tracking-wider" style="color: #94A3B8;">
+                  <th class="px-4 py-3">Invoice</th>
+                  <th class="px-4 py-3">Vendor</th>
+                  <th class="px-4 py-3 text-right">Amount</th>
+                  <th class="px-4 py-3 text-center">Risk</th>
+                  <th class="px-4 py-3 text-center">Decision</th>
+                  <th class="px-4 py-3 text-right">Time</th>
+                </tr>
+              </thead>
+              <tbody id="batch-table-body" style="color: #CBD5E1;"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="mt-4">
+          <a id="batch-csv-link" href="/api/export-csv"
+            class="inline-flex items-center gap-2 font-medium px-4 py-2 rounded-lg transition-colors duration-150 cursor-pointer text-sm"
+            style="background: #1E293B; border: 1px solid #334155; color: #fff;">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            Download CSV
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- TAB 3: Analytics -->
+    <!-- ================================================================== -->
+    <div id="tab-analytics" class="tab-content">
+      <div class="mb-6">
+        <h2 class="text-base font-bold text-white m-0">Analytics</h2>
+        <p class="text-sm m-0 mt-1" style="color: #94A3B8;">Insights from processed invoices</p>
+      </div>
+
+      <div id="analytics-empty" class="rounded-xl p-10 text-center" style="background: #1E293B; border: 1px solid #334155;">
+        <p class="text-sm" style="color: #94A3B8;">No invoices processed yet. Process some invoices to see analytics.</p>
+      </div>
+
+      <div id="analytics-content" class="hidden">
+        <div class="grid md:grid-cols-2 gap-6 mb-6">
+          <div class="rounded-xl p-5" style="background: #1E293B; border: 1px solid #334155;">
+            <div class="text-sm font-semibold text-white mb-3">Risk Score Distribution</div>
+            <div style="position: relative; height: 220px;"><canvas id="chart-risk"></canvas></div>
+          </div>
+          <div class="rounded-xl p-5" style="background: #1E293B; border: 1px solid #334155;">
+            <div class="text-sm font-semibold text-white mb-3">Decision Breakdown</div>
+            <div style="position: relative; height: 220px;"><canvas id="chart-decisions"></canvas></div>
+          </div>
+        </div>
+        <div class="grid md:grid-cols-2 gap-6">
+          <div class="rounded-xl p-5" style="background: #1E293B; border: 1px solid #334155;">
+            <div class="text-sm font-semibold text-white mb-3">Top Vendors by Invoice Count</div>
+            <div id="vendor-table-wrap" class="overflow-x-auto">
+              <table class="w-full text-sm text-left">
+                <thead class="text-xs uppercase tracking-wider" style="color: #94A3B8;">
+                  <tr>
+                    <th class="pb-2">Vendor</th>
+                    <th class="pb-2 text-right">Invoices</th>
+                  </tr>
+                </thead>
+                <tbody id="vendor-table-body" style="color: #CBD5E1;"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="rounded-xl p-5" style="background: #1E293B; border: 1px solid #334155;">
+            <div class="text-sm font-semibold text-white mb-3">Cost Savings Calculator</div>
+            <div class="mb-4">
+              <label for="cost-per-invoice" class="block text-sm mb-1.5" style="color: #CBD5E1;">Manual processing cost per invoice ($)</label>
+              <input id="cost-per-invoice" type="number" min="1" max="500" value="15" step="1"
+                class="w-full rounded-lg px-4 py-2.5 text-sm text-white outline-none transition-colors duration-150"
+                style="background: #0F172A; border: 1px solid #334155;">
+            </div>
+            <div class="rounded-lg p-5" style="background: rgba(51,65,85,0.5); border: 1px solid #334155; border-left: 4px solid #059669;">
+              <div class="text-xs font-semibold uppercase tracking-wider mb-2" style="color: #94A3B8;">Estimated Savings</div>
+              <div id="savings-value" class="text-3xl font-bold text-white">$0.00</div>
+              <div id="savings-sub" class="text-sm mt-1" style="color: #94A3B8;"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================================================================== -->
+    <!-- TAB 4: Audit Trail -->
+    <!-- ================================================================== -->
+    <div id="tab-audit" class="tab-content">
+      <div class="mb-6">
+        <h2 class="text-base font-bold text-white m-0">Audit Trail</h2>
+        <p class="text-sm m-0 mt-1" style="color: #94A3B8;">Complete history of all pipeline actions</p>
+      </div>
+
+      <div class="grid sm:grid-cols-3 gap-4 mb-4">
+        <div>
+          <label for="audit-filter-invoice" class="block text-sm mb-1.5" style="color: #CBD5E1;">Filter by invoice #</label>
+          <input id="audit-filter-invoice" type="text" placeholder="e.g. INV-1001"
+            class="w-full rounded-lg px-3 py-2 text-sm text-white outline-none transition-colors duration-150"
+            style="background: #0F172A; border: 1px solid #334155;">
+        </div>
+        <div>
+          <label for="audit-filter-agent" class="block text-sm mb-1.5" style="color: #CBD5E1;">Filter by agent</label>
+          <select id="audit-filter-agent"
+            class="w-full rounded-lg px-3 py-2 text-sm text-white cursor-pointer outline-none transition-colors duration-150"
+            style="background: #0F172A; border: 1px solid #334155;">
+            <option value="">(all)</option>
+          </select>
+        </div>
+        <div>
+          <label for="audit-filter-action" class="block text-sm mb-1.5" style="color: #CBD5E1;">Filter by action</label>
+          <select id="audit-filter-action"
+            class="w-full rounded-lg px-3 py-2 text-sm text-white cursor-pointer outline-none transition-colors duration-150"
+            style="background: #0F172A; border: 1px solid #334155;">
+            <option value="">(all)</option>
+          </select>
+        </div>
+      </div>
+      <div id="audit-count" class="text-xs mb-3" style="color: #94A3B8;"></div>
+
+      <div id="audit-empty" class="rounded-xl p-10 text-center" style="background: #1E293B; border: 1px solid #334155;">
+        <p class="text-sm" style="color: #94A3B8;">No audit entries yet. Process an invoice to see the trail.</p>
+      </div>
+      <div id="audit-list" class="space-y-2"></div>
+    </div>
+
+  </div>
+
+  <!-- Settings FAB -->
+  <button id="settings-toggle" aria-label="Toggle settings"
+    class="fixed bottom-6 right-6 w-12 h-12 rounded-full shadow-lg flex items-center justify-center cursor-pointer transition-colors duration-150 z-40"
+    style="background: #1E293B; border: 1px solid #334155;">
+    <svg class="w-5 h-5" style="color: #94A3B8;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+      <path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+    </svg>
+  </button>
+
+  <!-- Settings Drawer -->
+  <div id="settings-drawer" class="fixed inset-y-0 right-0 w-80 shadow-2xl transform translate-x-full transition-transform duration-200 z-50 overflow-y-auto" style="background: #0F172A; border-left: 1px solid #334155;">
+    <div class="p-6">
+      <div class="flex items-center justify-between mb-6">
+        <div class="text-base font-bold text-white">Settings</div>
+        <button id="settings-close" class="cursor-pointer" style="color: #94A3B8;" aria-label="Close settings">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
+      </div>
+
+      <div class="text-xs font-semibold uppercase tracking-wider mb-3" style="color: #94A3B8;">Risk Thresholds</div>
+      <div class="space-y-3 mb-6">
+        <div class="flex items-center justify-between">
+          <span class="text-sm" style="color: #CBD5E1;">High Risk</span>
+          <span id="setting-high-risk" class="text-sm text-white font-semibold">—</span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-sm" style="color: #CBD5E1;">Medium Risk</span>
+          <span id="setting-medium-risk" class="text-sm text-white font-semibold">—</span>
+        </div>
+        <div class="flex items-center justify-between">
+          <span class="text-sm" style="color: #CBD5E1;">Auto-Approve Limit</span>
+          <span id="setting-auto-limit" class="text-sm text-white font-semibold">—</span>
+        </div>
+      </div>
+      <p class="text-xs mb-6" style="color: #64748B;">Edit <code class="px-1 py-0.5 rounded" style="background: #1E293B;">.env</code> to change thresholds.</p>
+
+      <div class="pt-6 mb-6" style="border-top: 1px solid #334155;">
+        <div class="text-xs font-semibold uppercase tracking-wider mb-3" style="color: #94A3B8;">System</div>
+        <div class="flex items-center gap-2 mb-2">
+          <span class="w-2 h-2 rounded-full" style="background: #34D399;"></span>
+          <span class="text-sm" style="color: #CBD5E1;">Pipeline ready</span>
+        </div>
+        <div id="setting-processed-count" class="text-xs" style="color: #64748B;">0 invoices processed this session</div>
+      </div>
+
+      <button id="reset-db-btn"
+        class="w-full font-medium py-2.5 rounded-lg transition-colors duration-150 cursor-pointer text-sm mb-4"
+        style="background: #1E293B; border: 1px solid #334155; color: #CBD5E1;">
+        Reset Database
+      </button>
+      <div id="reset-feedback" class="hidden text-sm text-center" style="color: #34D399;">Database reset.</div>
+    </div>
+  </div>
+  <div id="settings-backdrop" class="fixed inset-0 hidden z-40 cursor-pointer" style="background: rgba(0,0,0,0.4);"></div>
+
+
+  <!-- ================================================================== -->
+  <!-- JavaScript -->
+  <!-- ================================================================== -->
+  <script>
+  (function() {
+    'use strict';
+
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => document.querySelectorAll(sel);
+
+    function riskColor(score) {
+      if (score >= 70) return '#DC2626';
+      if (score >= 30) return '#D97706';
+      return '#059669';
+    }
+    function riskBadge(score) {
+      const c = riskColor(score);
+      return '<span style="background:'+c+'; color:#fff; padding:2px 10px; border-radius:20px; font-weight:600; font-size:0.75rem;">'+score+'/100</span>';
+    }
+    function decisionColor(d) {
+      return { approved: '#059669', rejected: '#DC2626', escalated: '#D97706', pending_human_review: '#D97706', error: '#DC2626' }[d] || '#94A3B8';
+    }
+    function decisionBadge(d) {
+      const c = decisionColor(d);
+      const bg = { approved: '#ECFDF5', rejected: '#FEF2F2', escalated: '#FFFBEB', pending_human_review: '#FFFBEB', error: '#FEF2F2' }[d] || '#1E293B';
+      return '<span style="background:'+bg+'; color:'+c+'; padding:2px 10px; border-radius:20px; font-weight:600; font-size:0.75rem; text-transform:uppercase;">'+(d||'').replace(/_/g,' ')+'</span>';
+    }
+    function formatMoney(n) { return '$' + Number(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+
+    // ---- Tabs ----
+    $$('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        $$('.tab-btn').forEach(b => { b.classList.remove('active'); b.style.color = '#94A3B8'; });
+        btn.classList.add('active'); btn.style.color = '';
+        $$('.tab-content').forEach(c => c.classList.remove('active'));
+        $('#tab-'+btn.dataset.tab).classList.add('active');
+        if (btn.dataset.tab === 'analytics') renderAnalytics();
+        if (btn.dataset.tab === 'audit') renderAudit();
+      });
+    });
+
+    // ---- Settings drawer ----
+    $('#settings-toggle').addEventListener('click', () => {
+      $('#settings-drawer').classList.remove('translate-x-full');
+      $('#settings-backdrop').classList.remove('hidden');
+    });
+    function closeSettings() {
+      $('#settings-drawer').classList.add('translate-x-full');
+      $('#settings-backdrop').classList.add('hidden');
+    }
+    $('#settings-close').addEventListener('click', closeSettings);
+    $('#settings-backdrop').addEventListener('click', closeSettings);
+
+    fetch('/api/settings').then(r => r.json()).then(s => {
+      $('#setting-high-risk').textContent = s.high_risk_threshold;
+      $('#setting-medium-risk').textContent = s.medium_risk_threshold;
+      $('#setting-auto-limit').textContent = formatMoney(s.auto_approve_threshold);
+    });
+
+    $('#reset-db-btn').addEventListener('click', async () => {
+      await fetch('/api/reset-db', { method: 'POST' });
+      $('#reset-feedback').classList.remove('hidden');
+      setTimeout(() => $('#reset-feedback').classList.add('hidden'), 2000);
+      refreshState();
+    });
+
+    // ---- File upload ----
+    const dropZone = $('#drop-zone');
+    const fileInput = $('#file-input');
+    let selectedFile = null;
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault(); dropZone.classList.remove('drag-over');
+      if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => { if (fileInput.files.length) setFile(fileInput.files[0]); });
+    $('#file-clear').addEventListener('click', () => { selectedFile = null; $('#file-name').classList.add('hidden'); fileInput.value = ''; });
+
+    function setFile(f) {
+      selectedFile = f;
+      $('#file-name-text').textContent = f.name;
+      $('#file-name').classList.remove('hidden');
+    }
+
+    // ---- Agent visualization ----
+    const AGENTS = [
+      { key: 'extract', label: 'Extraction', color: '#3B82F6' },
+      { key: 'validate', label: 'Validation', color: '#06B6D4' },
+      { key: 'fraud_check', label: 'Fraud Detection', color: '#F59E0B' },
+      { key: 'approve', label: 'Approval', color: '#8B5CF6' },
+      { key: 'payment', label: 'Payment', color: '#059669' },
+      { key: 'explain', label: 'Explanation', color: '#F43F5E' },
+    ];
+
+    function renderAgentViz(currentIdx, done) {
+      const container = $('#agent-steps');
+      container.innerHTML = '';
+      container.classList.remove('hidden');
+      $('#agent-placeholder').classList.add('hidden');
+
+      AGENTS.forEach((agent, i) => {
+        let ringStyle, icon, textColor;
+        if (done || i < currentIdx) {
+          ringStyle = 'background:'+agent.color+'; color:#fff;';
+          icon = '<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="3"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg>';
+          textColor = '#F1F5F9';
+        } else if (i === currentIdx) {
+          ringStyle = 'background:'+agent.color+'; color:#fff; box-shadow:0 0 0 4px '+agent.color+'33;';
+          icon = '<span style="font-size:0.75rem; font-weight:700;">'+(i+1)+'</span>';
+          textColor = '#F1F5F9';
+        } else {
+          ringStyle = 'background:#0F172A; color:#94A3B8; border:2px solid #334155;';
+          icon = '<span style="font-size:0.75rem; font-weight:700;">'+(i+1)+'</span>';
+          textColor = '#94A3B8';
+        }
+
+        const connectorColor = (done || i < currentIdx) ? agent.color : '#334155';
+        const step = document.createElement('div');
+        step.innerHTML =
+          '<div style="display:flex; align-items:center; gap:12px;">' +
+            '<div style="width:32px; height:32px; border-radius:50%; display:flex; align-items:center; justify-content:center; flex-shrink:0; '+ringStyle+'">'+icon+'</div>' +
+            '<span style="font-size:0.85rem; font-weight:500; color:'+textColor+';">'+agent.label+'</span>' +
+          '</div>' +
+          (i < AGENTS.length - 1 ? '<div style="width:2px; height:16px; margin-left:15px; background:'+connectorColor+';"></div>' : '');
+        container.appendChild(step);
+      });
+    }
+
+    // ---- Process invoice ----
+    $('#process-btn').addEventListener('click', async () => {
+      const btn = $('#process-btn');
+      const pathVal = $('#path-input').value.trim();
+
+      if (!selectedFile && !pathVal) {
+        alert('Please upload a file or enter a file path.');
+        return;
+      }
+
+      btn.disabled = true; btn.style.opacity = '0.5';
+      $('#result-banner').classList.add('hidden');
+      $('#hitl-panel').classList.add('hidden');
+      $('#processing-status').classList.remove('hidden');
+      renderAgentViz(0, false);
+
+      let stepInterval = setInterval(() => {
+        const rings = document.querySelectorAll('#agent-steps > div');
+        let current = -1;
+        rings.forEach((s, i) => {
+          const ring = s.querySelector('[style*="box-shadow"]');
+          if (ring) current = Math.floor(i / 1);
+        });
+        if (current < AGENTS.length - 1) {
+          renderAgentViz(Math.min(current + 1, AGENTS.length - 1), false);
+        }
+      }, 1500);
+
+      try {
+        let res;
+        if (selectedFile) {
+          const fd = new FormData();
+          fd.append('file', selectedFile);
+          res = await fetch('/api/process', { method: 'POST', body: fd });
+        } else {
+          res = await fetch('/api/process', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_path: pathVal }),
+          });
+        }
+
+        clearInterval(stepInterval);
+        const data = await res.json();
+
+        if (!res.ok) {
+          alert(data.error || 'Processing failed.');
+          $('#processing-status').classList.add('hidden');
+          btn.disabled = false; btn.style.opacity = '';
+          return;
+        }
+
+        if (data.status === 'interrupted') {
+          renderAgentViz(3, false);
+          $('#processing-status').classList.add('hidden');
+          showHITL(data.review_context);
+        } else {
+          renderAgentViz(AGENTS.length, true);
+          $('#processing-status').classList.add('hidden');
+          showResult(data.record, data.audit_trail);
+          refreshState();
+        }
+      } catch (err) {
+        clearInterval(stepInterval);
+        alert('Error: ' + err.message);
+        $('#processing-status').classList.add('hidden');
+      }
+      btn.disabled = false; btn.style.opacity = '';
+    });
+
+    // ---- HITL ----
+    function showHITL(ctx) {
+      if (!ctx) return;
+      const inv = ctx.invoice || {};
+      $('#hitl-invoice').textContent = inv.invoice_number || ctx.invoice_number || '—';
+      $('#hitl-vendor').textContent = inv.vendor_name || ctx.vendor || '—';
+      $('#hitl-amount').textContent = formatMoney(ctx.amount || 0);
+      $('#hitl-risk-badge').innerHTML = riskBadge(ctx.risk_score || 0);
+      $('#hitl-rec-badge').innerHTML = decisionBadge(ctx.recommendation || 'unknown');
+
+      const narrative = ctx.fraud_narrative || ctx.narrative || '';
+      if (narrative) { $('#hitl-narrative').textContent = narrative; $('#hitl-narrative').classList.remove('hidden'); }
+      else { $('#hitl-narrative').classList.add('hidden'); }
+
+      const signals = ctx.fraud_signals || ctx.signals || [];
+      if (signals.length) {
+        $('#hitl-signals-list').innerHTML = signals.map(s => '<li>'+(typeof s === 'string' ? s : s.description || s)+'</li>').join('');
+        $('#hitl-signals').classList.remove('hidden');
+      } else { $('#hitl-signals').classList.add('hidden'); }
+
+      const validation = ctx.validation || {};
+      const issues = validation.issues || ctx.issues || [];
+      if (issues.length) {
+        $('#hitl-issues-list').innerHTML = issues.map(s => '<li>'+s+'</li>').join('');
+        $('#hitl-issues').classList.remove('hidden');
+      } else { $('#hitl-issues').classList.add('hidden'); }
+
+      $('#hitl-panel').classList.remove('hidden');
+    }
+
+    async function submitHITL(decision) {
+      const reasoning = $('#hitl-reasoning').value.trim();
+      $('#hitl-approve').disabled = true;
+      $('#hitl-reject').disabled = true;
+      $('#processing-status').classList.remove('hidden');
+      $('#processing-text').textContent = 'Resuming with decision: '+decision+'...';
+
+      const res = await fetch('/api/hitl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ decision, reasoning }),
+      });
+      const data = await res.json();
+      $('#processing-status').classList.add('hidden');
+      $('#hitl-panel').classList.add('hidden');
+      $('#hitl-approve').disabled = false;
+      $('#hitl-reject').disabled = false;
+
+      if (data.status === 'complete') {
+        renderAgentViz(AGENTS.length, true);
+        showResult(data.record);
+        refreshState();
+      }
+    }
+
+    $('#hitl-approve').addEventListener('click', () => submitHITL('approved'));
+    $('#hitl-reject').addEventListener('click', () => submitHITL('rejected'));
+
+    // ---- Result banner ----
+    function showResult(record, trail) {
+      const dec = record.decision;
+      const borderColor = decisionColor(dec);
+      const bgAlpha = { approved: 'rgba(5,150,105,0.05)', rejected: 'rgba(220,38,38,0.05)', escalated: 'rgba(217,119,6,0.05)' }[dec] || 'transparent';
+
+      let trailHTML = '';
+      if (trail && trail.length) {
+        const items = trail.filter(e => typeof e === 'object').map(e =>
+          '<div style="font-size:0.85rem; color:#CBD5E1;"><span style="font-weight:600; color:#fff;">'+
+          (e.agent||'?')+'</span> <span style="color:#94A3B8;">&rarr;</span> <code style="background:#0F172A; padding:1px 6px; border-radius:4px; font-size:0.75rem; color:#94A3B8;">'+
+          (e.action||'?')+'</code> '+(e.details||'')+'</div>'
+        ).join('');
+        trailHTML = '<details style="margin-top:12px;"><summary style="font-size:0.85rem; font-weight:600; color:#3B82F6; cursor:pointer;">Audit Trail</summary><div style="margin-top:8px; display:flex; flex-direction:column; gap:6px;">'+items+'</div></details>';
+      }
+
+      $('#result-banner').innerHTML =
+        '<div style="background:'+bgAlpha+'; border:1px solid #334155; border-left:4px solid '+borderColor+'; border-radius:8px; padding:20px;">' +
+          '<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">' +
+            '<div style="display:flex; align-items:center; gap:12px;">' +
+              '<span style="font-weight:700; color:#fff;">'+record.invoice_number+'</span>' +
+              decisionBadge(dec) +
+            '</div>' +
+            '<div style="display:flex; align-items:center; gap:16px; font-size:0.85rem; color:#94A3B8;">' +
+              '<span>Risk: '+riskBadge(record.risk_score)+'</span>' +
+              '<span style="font-weight:500; color:#fff;">'+formatMoney(record.amount)+'</span>' +
+              '<span>'+record.processing_time_seconds.toFixed(1)+'s</span>' +
+            '</div>' +
+          '</div>' +
+          (record.explanation ?
+            '<details style="margin-top:12px;"><summary style="font-size:0.85rem; font-weight:600; color:#3B82F6; cursor:pointer;">Decision Explanation</summary>' +
+            '<div style="margin-top:8px; font-size:0.85rem; color:#CBD5E1; white-space:pre-wrap; line-height:1.6;">'+record.explanation+'</div></details>' : '') +
+          trailHTML +
+        '</div>';
+      $('#result-banner').classList.remove('hidden');
+    }
+
+    // ---- Batch file upload ----
+    const batchDropZone = $('#batch-drop-zone');
+    const batchFileInput = $('#batch-file-input');
+    let batchSelectedFiles = [];
+
+    batchDropZone.addEventListener('click', () => batchFileInput.click());
+    batchDropZone.addEventListener('dragover', (e) => { e.preventDefault(); batchDropZone.classList.add('drag-over'); });
+    batchDropZone.addEventListener('dragleave', () => batchDropZone.classList.remove('drag-over'));
+    batchDropZone.addEventListener('drop', (e) => {
+      e.preventDefault(); batchDropZone.classList.remove('drag-over');
+      if (e.dataTransfer.files.length) setBatchFiles(Array.from(e.dataTransfer.files));
+    });
+    batchFileInput.addEventListener('change', () => {
+      if (batchFileInput.files.length) setBatchFiles(Array.from(batchFileInput.files));
+    });
+    $('#batch-file-clear').addEventListener('click', () => {
+      batchSelectedFiles = [];
+      $('#batch-file-list').classList.add('hidden');
+      batchFileInput.value = '';
+    });
+
+    function setBatchFiles(files) {
+      batchSelectedFiles = files;
+      const namesEl = $('#batch-file-names');
+      namesEl.innerHTML = files.map(f =>
+        '<div class="flex items-center gap-2">' +
+          '<svg class="w-3 h-3" style="color:#3B82F6;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>' +
+          '<span>' + f.name + '</span>' +
+        '</div>'
+      ).join('');
+      $('#batch-file-list').classList.remove('hidden');
+    }
+
+    // ---- Batch ----
+    $('#batch-btn').addEventListener('click', async () => {
+      const btn = $('#batch-btn');
+      btn.disabled = true; btn.style.opacity = '0.5';
+      $('#batch-progress').classList.remove('hidden');
+      $('#batch-progress-text').textContent = 'Starting...';
+      $('#batch-progress-bar').style.width = '0%';
+      $('#batch-kpis').classList.add('hidden');
+      $('#batch-table-wrap').classList.add('hidden');
+
+      const dir = $('#batch-dir').value.trim();
+      const autoApprove = $('#batch-auto').checked;
+      const fresh = $('#batch-fresh').checked;
+
+      try {
+        let res;
+        if (batchSelectedFiles.length > 0) {
+          // Use file upload endpoint
+          const fd = new FormData();
+          for (const f of batchSelectedFiles) fd.append('files', f);
+          fd.append('auto_approve', autoApprove);
+          fd.append('fresh', fresh);
+          res = await fetch('/api/batch-upload', { method: 'POST', body: fd });
+        } else {
+          // Use directory endpoint
+          res = await fetch('/api/batch', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ directory: dir, auto_approve: autoApprove, fresh }),
+          });
+        }
+
+        if (!res.ok) {
+          const err = await res.json();
+          alert(err.error || 'Batch failed.');
+          $('#batch-progress').classList.add('hidden');
+          btn.disabled = false; btn.style.opacity = '';
+          return;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let finalData = null;
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const parts = buffer.split('\n\n');
+          buffer = parts.pop() || '';
+
+          for (const part of parts) {
+            const lines = part.trim().split('\n');
+            let eventType = '', eventData = '';
+            for (const line of lines) {
+              if (line.startsWith('event: ')) eventType = line.slice(7);
+              if (line.startsWith('data: ')) eventData = line.slice(6);
+            }
+            if (!eventType || !eventData) continue;
+
+            if (eventType === 'progress') {
+              const p = JSON.parse(eventData);
+              const pct = Math.round((p.current / p.total) * 100);
+              $('#batch-progress-text').textContent = 'Processing ' + p.current + '/' + p.total + ': ' + p.file;
+              $('#batch-progress-bar').style.width = pct + '%';
+            }
+
+            if (eventType === 'complete') {
+              finalData = JSON.parse(eventData);
+            }
+          }
+        }
+
+        $('#batch-progress').classList.add('hidden');
+
+        if (!finalData) { alert('Batch returned no results.'); btn.disabled = false; btn.style.opacity = ''; return; }
+
+        const data = finalData;
+        const kpis = $('#batch-kpis');
+        kpis.innerHTML = [
+          { label: 'Total', value: data.total, color: '#3B82F6' },
+          { label: 'Approved', value: data.approved, color: '#059669' },
+          { label: 'Rejected', value: data.rejected, color: '#DC2626' },
+          { label: 'Flagged', value: data.flagged, color: '#D97706' },
+        ].map(k =>
+          '<div class="rounded-lg p-5" style="background:#1E293B; border:1px solid #334155; border-left:4px solid '+k.color+';">' +
+            '<div style="font-size:0.75rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:8px; color:#94A3B8;">'+k.label+'</div>' +
+            '<div class="text-3xl font-bold text-white">'+k.value+'</div>' +
+          '</div>'
+        ).join('');
+        kpis.classList.remove('hidden');
+
+        const tbody = $('#batch-table-body');
+        tbody.innerHTML = data.records.map(r => {
+          const rowBg = r.decision === 'approved' ? 'rgba(5,150,105,0.05)' :
+                        (r.decision === 'rejected' || r.decision === 'error') ? 'rgba(220,38,38,0.05)' : 'rgba(217,119,6,0.05)';
+          return '<tr style="background:'+rowBg+'; border-bottom:1px solid #334155;">' +
+            '<td style="padding:12px 16px; font-weight:500; color:#fff;">'+r.invoice_number+'</td>' +
+            '<td style="padding:12px 16px; color:#CBD5E1;">'+r.vendor+'</td>' +
+            '<td style="padding:12px 16px; text-align:right; color:#fff;">'+formatMoney(r.amount)+'</td>' +
+            '<td style="padding:12px 16px; text-align:center;">'+riskBadge(r.risk_score)+'</td>' +
+            '<td style="padding:12px 16px; text-align:center;">'+decisionBadge(r.decision)+'</td>' +
+            '<td style="padding:12px 16px; text-align:right; color:#94A3B8;">'+r.processing_time_seconds.toFixed(1)+'s</td>' +
+          '</tr>';
+        }).join('');
+        $('#batch-table-wrap').classList.remove('hidden');
+        refreshState();
+      } catch (err) {
+        alert('Error: ' + err.message);
+        $('#batch-progress').classList.add('hidden');
+      }
+      btn.disabled = false; btn.style.opacity = '';
+    });
+
+    // ---- Analytics ----
+    let riskChart = null, decisionChart = null;
+
+    function renderAnalytics() {
+      fetch('/api/state').then(r => r.json()).then(state => {
+        if (!state.results.length) {
+          $('#analytics-empty').classList.remove('hidden');
+          $('#analytics-content').classList.add('hidden');
+          return;
+        }
+        $('#analytics-empty').classList.add('hidden');
+        $('#analytics-content').classList.remove('hidden');
+
+        const bins = Array(10).fill(0);
+        const binLabels = ['0-9','10-19','20-29','30-39','40-49','50-59','60-69','70-79','80-89','90-100'];
+        state.results.forEach(r => { bins[Math.min(Math.floor(r.risk_score / 10), 9)]++; });
+
+        if (riskChart) riskChart.destroy();
+        riskChart = new Chart($('#chart-risk'), {
+          type: 'bar',
+          data: { labels: binLabels, datasets: [{ label: 'Invoices', data: bins, backgroundColor: '#3B82F6', borderRadius: 4 }] },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { color: '#94A3B8', font: { size: 11 } }, grid: { display: false } },
+              y: { ticks: { color: '#94A3B8', stepSize: 1 }, grid: { color: '#334155' } }
+            }
+          }
+        });
+
+        const decisions = {};
+        state.results.forEach(r => { decisions[r.decision] = (decisions[r.decision] || 0) + 1; });
+        const decLabels = Object.keys(decisions);
+
+        if (decisionChart) decisionChart.destroy();
+        decisionChart = new Chart($('#chart-decisions'), {
+          type: 'doughnut',
+          data: {
+            labels: decLabels.map(d => d.replace(/_/g, ' ')),
+            datasets: [{ data: Object.values(decisions), backgroundColor: decLabels.map(d => decisionColor(d)), borderWidth: 0 }]
+          },
+          options: {
+            responsive: true, maintainAspectRatio: false,
+            plugins: { legend: { position: 'bottom', labels: { color: '#94A3B8', font: { size: 12 }, padding: 16 } } }
+          }
+        });
+
+        const vendors = {};
+        state.results.forEach(r => { vendors[r.vendor] = (vendors[r.vendor] || 0) + 1; });
+        const sortedVendors = Object.entries(vendors).sort((a, b) => b[1] - a[1]).slice(0, 10);
+        $('#vendor-table-body').innerHTML = sortedVendors.map(([v, c]) =>
+          '<tr style="border-bottom:1px solid #334155;"><td style="padding:8px 0; color:#CBD5E1;">'+v+'</td><td style="padding:8px 0; text-align:right; color:#fff; font-weight:500;">'+c+'</td></tr>'
+        ).join('');
+
+        updateSavings(state);
+      });
+    }
+
+    function updateSavings(state) {
+      const cost = parseFloat($('#cost-per-invoice').value) || 15;
+      const autoApproved = state.results.filter(r => r.decision === 'approved').length;
+      $('#savings-value').textContent = formatMoney(autoApproved * cost);
+      $('#savings-sub').textContent = autoApproved + ' auto-approved x ' + formatMoney(cost);
+    }
+
+    $('#cost-per-invoice').addEventListener('input', () => {
+      fetch('/api/state').then(r => r.json()).then(updateSavings);
+    });
+
+    // ---- Audit trail ----
+    function renderAudit() {
+      fetch('/api/state').then(r => r.json()).then(state => {
+        const entries = state.audit_entries || [];
+        if (!entries.length) {
+          $('#audit-empty').classList.remove('hidden');
+          $('#audit-list').innerHTML = '';
+          $('#audit-count').textContent = '';
+          return;
+        }
+        $('#audit-empty').classList.add('hidden');
+
+        const agents = [...new Set(entries.map(e => e.agent))].sort();
+        const actions = [...new Set(entries.map(e => e.action))].sort();
+        const agentSel = $('#audit-filter-agent');
+        const actionSel = $('#audit-filter-action');
+        const cA = agentSel.value, cAc = actionSel.value;
+        agentSel.innerHTML = '<option value="">(all)</option>' + agents.map(a => '<option value="'+a+'" '+(a===cA?'selected':'')+'>'+a+'</option>').join('');
+        actionSel.innerHTML = '<option value="">(all)</option>' + actions.map(a => '<option value="'+a+'" '+(a===cAc?'selected':'')+'>'+a+'</option>').join('');
+        filterAudit(entries);
+      });
+    }
+
+    function filterAudit(entries) {
+      const invoiceF = $('#audit-filter-invoice').value.trim().toLowerCase();
+      const agentF = $('#audit-filter-agent').value;
+      const actionF = $('#audit-filter-action').value;
+
+      let filtered = entries;
+      if (invoiceF) filtered = filtered.filter(e => (e.invoice || '').toLowerCase().includes(invoiceF));
+      if (agentF) filtered = filtered.filter(e => e.agent === agentF);
+      if (actionF) filtered = filtered.filter(e => e.action === actionF);
+
+      $('#audit-count').textContent = 'Showing '+filtered.length+' of '+entries.length+' entries';
+
+      const actionColors = {
+        auto_approve: '#059669', auto_reject: '#DC2626',
+        human_review: '#D97706', retry: '#3B82F6',
+        rejected: '#DC2626', approved: '#059669', error: '#DC2626',
+      };
+
+      $('#audit-list').innerHTML = [...filtered].reverse().map(e => {
+        const dotColor = actionColors[e.action] || '#94A3B8';
+        const ts = (e.timestamp || '').substring(0, 19).replace('T', ' ');
+        return '<div style="background:#1E293B; border:1px solid #334155; border-radius:8px; padding:12px 16px;">' +
+          '<div style="display:flex; justify-content:space-between; align-items:flex-start;">' +
+            '<div>' +
+              '<div style="display:flex; align-items:center; gap:8px;">' +
+                '<span style="width:8px; height:8px; border-radius:50%; flex-shrink:0; background:'+dotColor+'; display:inline-block;"></span>' +
+                '<span style="font-weight:600; font-size:0.85rem; color:#fff;">'+e.agent+'</span>' +
+                '<span style="color:#94A3B8; font-size:0.85rem;">&rarr;</span>' +
+                '<code style="background:#0F172A; padding:2px 8px; border-radius:4px; font-size:0.75rem; color:#94A3B8;">'+e.action+'</code>' +
+              '</div>' +
+              (e.invoice ? '<div style="color:#94A3B8; font-size:0.75rem; margin-top:4px; margin-left:16px;">'+e.invoice+'</div>' : '') +
+              (e.details ? '<div style="color:#CBD5E1; font-size:0.82rem; margin-top:4px; margin-left:16px;">'+e.details+'</div>' : '') +
+            '</div>' +
+            '<div style="color:#64748B; font-size:0.72rem; white-space:nowrap; margin-left:16px;">'+ts+'</div>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    ['audit-filter-invoice', 'audit-filter-agent', 'audit-filter-action'].forEach(id => {
+      $('#'+id).addEventListener('input', () => { fetch('/api/state').then(r => r.json()).then(s => filterAudit(s.audit_entries || [])); });
+      $('#'+id).addEventListener('change', () => { fetch('/api/state').then(r => r.json()).then(s => filterAudit(s.audit_entries || [])); });
+    });
+
+    // ---- Refresh KPIs ----
+    function refreshState() {
+      fetch('/api/state').then(r => r.json()).then(state => {
+        const total = state.total;
+        const pct = total ? Math.round(state.approved / total * 100) : 0;
+        $('#kpi-total').textContent = total;
+        $('#kpi-approved').textContent = pct + '%';
+        $('#kpi-approved-sub').textContent = total ? state.approved+' of '+total : '';
+        $('#kpi-flagged').textContent = state.flagged;
+        $('#kpi-risk').textContent = state.avg_risk + '/100';
+
+        const rc = $('#kpi-risk-card');
+        rc.style.borderLeftColor = state.avg_risk >= 70 ? '#DC2626' : state.avg_risk >= 30 ? '#D97706' : '#059669';
+        $('#setting-processed-count').textContent = total + ' invoices processed this session';
+      });
+    }
+
+    refreshState();
+  })();
+  </script>
+</body>
+</html>

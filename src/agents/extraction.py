@@ -254,7 +254,6 @@ def extraction_node(state: InvoiceState) -> dict:
 
     warnings: list[str] = []
 
-    # primary: structured LLM call
     messages = [
         SystemMessage(content=_SYSTEM_PROMPT),
         HumanMessage(content=_build_user_message(raw_text, feedback, prior)),
@@ -267,7 +266,6 @@ def extraction_node(state: InvoiceState) -> dict:
         logger.warning("extraction.structured_failed", error=str(e)[:200])
         warnings.append(f"Structured output failed ({type(e).__name__}); falling back to raw JSON.")
 
-    # fallback: raw JSON
     if raw_invoice is None:
         try:
             raw_invoice = _fallback_extract(raw_text, feedback, prior, warnings)

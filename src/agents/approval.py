@@ -35,8 +35,6 @@ def approval_node(state: InvoiceState) -> dict:
     warnings = validation.get("warnings", [])
     stock_checks = validation.get("stock_checks", {})
 
-    # --- STEP 1: Auto-reject on critical failures ---
-
     # Any KNOWN item exceeding stock is a hard reject
     has_stock_violation = any(
         v.get("requested", 0) > v.get("available", 0)
@@ -79,19 +77,16 @@ def approval_node(state: InvoiceState) -> dict:
         logger.info("approval.auto_reject", invoice=invoice_number, reason=reason)
         return _make_decision("rejected", "system", reason, "auto_reject")
 
-    # --- STEP 2: Auto-reject on high fraud risk ---
     if risk_score >= settings.high_risk_threshold:
         reason = f"High fraud risk score: {risk_score}"
         logger.warning("approval.auto_reject", invoice=invoice_number, risk=risk_score)
         return _make_decision("rejected", "system", reason, "auto_reject")
 
-    # --- STEP 3: Escalate on non-critical validation failures ---
     if not is_valid:
         reason = f"Validation issues require review: {'; '.join(issues[:3])}"
         logger.info("approval.escalate", invoice=invoice_number, issues=len(issues))
         return _escalate_for_review(state, reason, invoice_number)
 
-    # --- STEP 4: Escalate on concerning warnings ---
     concerning_warning_patterns = (
         "price variance", "price differs", "price mismatch",
         "math", "total mismatch", "calculated total",
@@ -110,13 +105,11 @@ def approval_node(state: InvoiceState) -> dict:
         logger.info("approval.escalate", invoice=invoice_number, warnings=len(concerning_warnings))
         return _escalate_for_review(state, reason, invoice_number)
 
-    # --- STEP 5: Auto-approve if clean ---
     if amount < settings.auto_approve_threshold and risk_score < settings.medium_risk_threshold:
         reason = f"Clean invoice: amount=${amount:,.2f}, risk={risk_score}"
         logger.info("approval.auto_approve", invoice=invoice_number, amount=amount, risk=risk_score)
         return _make_decision("approved", "auto", reason, "auto_approve")
 
-    # --- STEP 6: Everything else -> HITL ---
     reason = f"Amount=${amount:,.2f} or risk={risk_score} requires human review"
     logger.info("approval.needs_review", invoice=invoice_number, amount=amount, risk=risk_score)
     return _escalate_for_review(state, reason, invoice_number)

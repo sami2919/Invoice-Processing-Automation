@@ -1,7 +1,4 @@
-"""LangGraph pipeline — assembles agent nodes into a compiled graph.
-
-Flow: extract -> validate -> [retry | fraud_check] -> approve -> [payment | reject] -> explain -> END
-"""
+"""LangGraph pipeline assembly."""
 
 import uuid
 from typing import Optional
