@@ -1,9 +1,10 @@
-"""Approval agent — routes invoices to auto-approve, auto-reject, or human review."""
+"""Approval agent: routes invoices to auto approve, auto reject, or human review."""
 
 import structlog
 from langgraph.types import interrupt
 
 from src.config import get_settings
+from src.llm.grok_client import assess
 from src.models.invoice import ApprovalDecision
 from src.models.state import InvoiceState
 
@@ -19,16 +20,10 @@ def _make_decision(status: str, approver: str, reasoning: str, action: str) -> d
     }
 
 
-def approval_node(state: InvoiceState) -> dict:
-    settings = get_settings()
-    fraud = state.get("fraud_result") or {}
-    inv = state.get("extracted_invoice") or {}
-    validation = state.get("validation_result") or {}
-
+def _build_risk_summary(inv: dict, fraud: dict, validation: dict) -> dict:
     risk_score = int(fraud.get("risk_score", 0))
     amount = float(inv.get("total_amount") or 0.0)
     invoice_number = inv.get("invoice_number", "UNKNOWN")
-    recommendation = fraud.get("recommendation", "auto_approve")
 
     is_valid = validation.get("is_valid", True)
     issues = validation.get("issues", [])
@@ -37,9 +32,7 @@ def approval_node(state: InvoiceState) -> dict:
 
     # Any KNOWN item exceeding stock is a hard reject
     has_stock_violation = any(
-        v.get("requested", 0) > v.get("available", 0)
-        for v in stock_checks.values()
-        if v.get("available") is not None
+        v["requested"] > v["available"] for v in stock_checks.values()
     )
 
     # Critical issue patterns (always reject)
@@ -54,8 +47,7 @@ def approval_node(state: InvoiceState) -> dict:
         "Insufficient stock",
     )
     has_critical_issue = any(
-        any(pattern.lower() in issue.lower() for pattern in critical_patterns)
-        for issue in issues
+        any(pattern.lower() in issue.lower() for pattern in critical_patterns) for issue in issues
     )
 
     # All items unknown (nothing validates at all)
@@ -64,15 +56,52 @@ def approval_node(state: InvoiceState) -> dict:
     line_items = inv.get("line_items") or []
     all_items_unknown = (
         not stock_checks and unknown_item_issues and len(unknown_item_issues) >= len(line_items)
-    ) or (
-        stock_checks
-        and all(v.get("available") is None for v in stock_checks.values())
-    )
+    ) or (stock_checks and all(v.get("available") is None for v in stock_checks.values()))
 
-    if has_stock_violation or has_critical_issue or all_items_unknown:
+    concerning_warning_patterns = (
+        "price variance",
+        "price differs",
+        "price mismatch",
+        "math",
+        "total mismatch",
+        "calculated total",
+        "currency",
+        "non-USD",
+        "EUR",
+        "duplicate",
+        "previously processed",
+        "unknown item",
+        "not found in inventory",
+        "OCR",
+        "artifact",
+    )
+    concerning_warnings = [
+        w for w in warnings if any(p.lower() in w.lower() for p in concerning_warning_patterns)
+    ]
+
+    return {
+        "risk_score": risk_score,
+        "amount": amount,
+        "invoice_number": invoice_number,
+        "is_valid": is_valid,
+        "issues": issues,
+        "warnings": warnings,
+        "has_stock_violation": has_stock_violation,
+        "has_critical_issue": has_critical_issue,
+        "all_items_unknown": all_items_unknown,
+        "concerning_warnings": concerning_warnings,
+    }
+
+
+def _determine_approval_decision(state: dict, summary: dict, settings) -> dict:
+    invoice_number = summary["invoice_number"]
+    risk_score = summary["risk_score"]
+    amount = summary["amount"]
+
+    if summary["has_stock_violation"] or summary["has_critical_issue"] or summary["all_items_unknown"]:
         reason = (
-            f"Critical validation failure: stock_violation={has_stock_violation}, "
-            f"critical_issue={has_critical_issue}, all_unknown={all_items_unknown}"
+            f"Critical validation failure: stock_violation={summary['has_stock_violation']}, "
+            f"critical_issue={summary['has_critical_issue']}, all_unknown={summary['all_items_unknown']}"
         )
         logger.info("approval.auto_reject", invoice=invoice_number, reason=reason)
         return _make_decision("rejected", "system", reason, "auto_reject")
@@ -82,27 +111,14 @@ def approval_node(state: InvoiceState) -> dict:
         logger.warning("approval.auto_reject", invoice=invoice_number, risk=risk_score)
         return _make_decision("rejected", "system", reason, "auto_reject")
 
-    if not is_valid:
-        reason = f"Validation issues require review: {'; '.join(issues[:3])}"
-        logger.info("approval.escalate", invoice=invoice_number, issues=len(issues))
+    if not summary["is_valid"]:
+        reason = f"Validation issues require review: {'; '.join(summary['issues'][:3])}"
+        logger.info("approval.escalate", invoice=invoice_number, issues=len(summary["issues"]))
         return _escalate_for_review(state, reason, invoice_number)
 
-    concerning_warning_patterns = (
-        "price variance", "price differs", "price mismatch",
-        "math", "total mismatch", "calculated total",
-        "currency", "non-USD", "EUR",
-        "duplicate", "previously processed",
-        "unknown item", "not found in inventory",
-        "OCR", "artifact",
-    )
-    concerning_warnings = [
-        w for w in warnings
-        if any(p.lower() in w.lower() for p in concerning_warning_patterns)
-    ]
-
-    if concerning_warnings:
-        reason = f"Warnings need review: {'; '.join(concerning_warnings[:3])}"
-        logger.info("approval.escalate", invoice=invoice_number, warnings=len(concerning_warnings))
+    if summary["concerning_warnings"]:
+        reason = f"Warnings need review: {'; '.join(summary['concerning_warnings'][:3])}"
+        logger.info("approval.escalate", invoice=invoice_number, warnings=len(summary["concerning_warnings"]))
         return _escalate_for_review(state, reason, invoice_number)
 
     if amount < settings.auto_approve_threshold and risk_score < settings.medium_risk_threshold:
@@ -115,10 +131,56 @@ def approval_node(state: InvoiceState) -> dict:
     return _escalate_for_review(state, reason, invoice_number)
 
 
-def _escalate_for_review(state: dict, reason: str, invoice_number: str = "UNKNOWN") -> dict:
-    """Interrupt the graph for human review."""
+def approval_node(state: InvoiceState) -> dict:
+    settings = get_settings()
     fraud = state.get("fraud_result") or {}
     inv = state.get("extracted_invoice") or {}
+    validation = state.get("validation_result") or {}
+    summary = _build_risk_summary(inv, fraud, validation)
+    return _determine_approval_decision(state, summary, settings)
+
+
+def _build_reflection(inv: dict, fraud: dict, validation: dict, reason: str) -> str:
+    """Generate a devil's advocate counter argument for the human reviewer."""
+    signals = fraud.get("signals", [])
+    sig_lines = (
+        "\n".join(
+            f"- [{s.get('severity', '?').upper()}] {s.get('description', '')}"
+            for s in signals
+            if isinstance(s, dict)
+        )
+        or "None"
+    )
+    warnings = validation.get("warnings", [])
+    issues = validation.get("issues", [])
+
+    prompt = (
+        "You are a senior financial auditor acting as devil's advocate.\n\n"
+        f"Invoice: {inv.get('invoice_number', 'UNKNOWN')}\n"
+        f"Vendor: {inv.get('vendor_name', 'UNKNOWN')}\n"
+        f"Amount: ${float(inv.get('total_amount') or 0):,.2f}\n"
+        f"Risk score: {fraud.get('risk_score', 0)}/100\n\n"
+        f"Escalation reason: {reason}\n\n"
+        f"Fraud signals:\n{sig_lines}\n\n"
+        f"Validation issues: {'; '.join(issues[:3]) or 'None'}\n"
+        f"Validation warnings: {'; '.join(warnings[:3]) or 'None'}\n\n"
+        "In 2-3 sentences, challenge this escalation. If the concerns are "
+        "weak, argue why this invoice could safely be approved. If the "
+        "concerns are strong, explain what specific risk would materialise "
+        "if it were approved anyway. Be concrete and specific."
+    )
+    try:
+        return assess(prompt, temperature=0.5)
+    except Exception as exc:
+        logger.warning("approval.reflection_failed", error=str(exc)[:200])
+        return ""
+
+
+def _escalate_for_review(state: dict, reason: str, invoice_number: str = "UNKNOWN") -> dict:
+    """Interrupt the graph for human review with a devil's advocate reflection."""
+    fraud = state.get("fraud_result") or {}
+    inv = state.get("extracted_invoice") or {}
+    validation = state.get("validation_result") or {}
     recommendation = fraud.get("recommendation", "auto_approve")
 
     signals = fraud.get("signals", [])
@@ -127,9 +189,12 @@ def _escalate_for_review(state: dict, reason: str, invoice_number: str = "UNKNOW
     label_map = {"auto_approve": "approve", "flag_for_review": "review", "block": "reject"}
     rec_label = label_map.get(recommendation, recommendation)
 
+    # Grok reflection: gives the human reviewer a second opinion
+    reflection = _build_reflection(inv, fraud, validation, reason)
+
     review_ctx = {
         "invoice": inv,
-        "validation": state.get("validation_result") or {},
+        "validation": validation,
         "fraud": fraud,
         "amount": float(inv.get("total_amount") or 0),
         "risk_score": int(fraud.get("risk_score", 0)),
@@ -137,6 +202,7 @@ def _escalate_for_review(state: dict, reason: str, invoice_number: str = "UNKNOW
         "fraud_signals": sig_desc,
         "fraud_narrative": fraud.get("narrative", ""),
         "escalation_reason": reason,
+        "reflection": reflection,
     }
 
     human_input = interrupt(review_ctx)
@@ -152,6 +218,11 @@ def _escalate_for_review(state: dict, reason: str, invoice_number: str = "UNKNOW
     return {
         "approval_decision": decision.model_dump(),
         "current_agent": "approval",
-        "audit_trail": [{"agent": "approval", "action": "human_review",
-                         "details": f"Human decision: {human_decision} — {reasoning}"}],
+        "audit_trail": [
+            {
+                "agent": "approval",
+                "action": "human_review",
+                "details": f"Human decision: {human_decision} — {reasoning}",
+            }
+        ],
     }

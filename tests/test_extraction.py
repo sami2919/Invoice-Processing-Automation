@@ -81,9 +81,12 @@ def test_unsupported_format(tmp_path):
 
 
 def test_retry_prompt_includes_feedback():
-    msg = _build_user_message("INVOICE TEXT", "vendor_name is missing",
-                               {"invoice_number": "INV-X", "vendor_name": "", "total_amount": 0.0})
-    assert "SELF-CORRECTION REQUIRED" in msg
+    msg = _build_user_message(
+        "INVOICE TEXT",
+        "vendor_name is missing",
+        {"invoice_number": "INV-X", "vendor_name": "", "total_amount": 0.0},
+    )
+    assert "SELF CORRECTION REQUIRED" in msg
     assert "vendor_name is missing" in msg
 
 

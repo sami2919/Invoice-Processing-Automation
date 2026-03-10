@@ -28,6 +28,11 @@ def payment_node(state: InvoiceState) -> dict:
     return {
         "payment_result": result,
         "current_agent": "payment",
-        "audit_trail": [{"agent": "payment", "action": "payment_initiated",
-                         "details": f"TXN {result.get('transaction_id')} — ${amount:,.2f} to {vendor}"}],
+        "audit_trail": [
+            {
+                "agent": "payment",
+                "action": "payment_initiated",
+                "details": f"TXN {result.get('transaction_id')} — ${amount:,.2f} to {vendor}",
+            }
+        ],
     }

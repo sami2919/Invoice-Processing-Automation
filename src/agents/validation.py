@@ -3,7 +3,6 @@
 import time
 from collections import defaultdict
 from datetime import date, datetime, timezone
-from typing import Optional
 
 import structlog
 
@@ -46,10 +45,7 @@ def _check_required_fields(inv: dict) -> list[str]:
 def _check_negative_quantities(line_items: list[dict]) -> list[str]:
     issues: list[str] = []
     for idx, item in enumerate(line_items):
-        try:
-            qty = float(item.get("quantity", 0) or 0)
-        except (TypeError, ValueError):
-            qty = 0.0
+        qty = float(item.get("quantity", 0) or 0)
         if qty <= 0:
             issues.append(
                 f"Line item {idx + 1} '{item.get('item_name', '?')}': "
@@ -59,20 +55,20 @@ def _check_negative_quantities(line_items: list[dict]) -> list[str]:
 
 
 def _resolve_item_names(
-    line_items: list[dict], db_path: Optional[str]
-) -> tuple[list[str], dict[str, Optional[str]]]:
+    line_items: list[dict],
+) -> tuple[list[str], dict[str, str | None]]:
     """Resolve each item name to its canonical inventory name via exact + fuzzy match."""
     issues: list[str] = []
-    name_map: dict[str, Optional[str]] = {}
+    name_map: dict[str, str | None] = {}
 
     for item in line_items:
         original = str(item.get("item_name", "") or "")
         if original in name_map:
             continue
-        if check_item_exists(original, db_path):
+        if check_item_exists(original):
             name_map[original] = original
         else:
-            canonical = fuzzy_match_item(original, db_path)
+            canonical = fuzzy_match_item(original)
             name_map[original] = canonical
             if canonical is None:
                 issues.append(f"Item '{original}' not found in inventory (unknown item)")
@@ -81,37 +77,45 @@ def _resolve_item_names(
 
 
 def _check_aggregate_stock(
-    line_items: list[dict], name_map: dict[str, Optional[str]], db_path: Optional[str],
+    line_items: list[dict],
+    name_map: dict[str, str | None],
 ) -> tuple[list[str], dict[str, dict]]:
     """Sum quantities per canonical item across ALL line items, then check stock.
-    This catches INV-1013 where WidgetA appears 3x (15+5+2=22) vs stock=15."""
+
+    We aggregate BEFORE comparing to inventory — without this, an invoice
+    splitting WidgetA across 3 line items (15+5+2=22) would pass each check
+    individually while exceeding the 15 units in stock."""
     aggregated: dict[str, float] = defaultdict(float)
     for item in line_items:
         original = str(item.get("item_name", "") or "")
         canonical = name_map.get(original)
         if canonical is None:
             continue
-        try:
-            qty = float(item.get("quantity", 0) or 0)
-        except (TypeError, ValueError):
-            qty = 0.0
+        qty = float(item.get("quantity", 0) or 0)
         if qty > 0:
             aggregated[canonical] += qty
 
     issues: list[str] = []
     stock_checks: dict[str, dict] = {}
     for canonical, total_qty in aggregated.items():
-        available = get_item_stock(canonical, db_path)
+        available = get_item_stock(canonical)
         sufficient = total_qty <= available
-        stock_checks[canonical] = {"requested": total_qty, "available": available, "sufficient": sufficient}
+        stock_checks[canonical] = {
+            "requested": total_qty,
+            "available": available,
+            "sufficient": sufficient,
+        }
         if not sufficient:
-            issues.append(f"Insufficient stock for '{canonical}': requested {total_qty:g}, available {available}")
+            issues.append(
+                f"Insufficient stock for '{canonical}': requested {total_qty:g}, available {available}"
+            )
 
     return issues, stock_checks
 
 
 def _check_price_variance(
-    line_items: list[dict], name_map: dict[str, Optional[str]], db_path: Optional[str],
+    line_items: list[dict],
+    name_map: dict[str, str | None],
 ) -> list[str]:
     prices_by_item: dict[str, list[tuple[str, float]]] = {}
     for item in line_items:
@@ -119,21 +123,24 @@ def _check_price_variance(
         canonical = name_map.get(original)
         if canonical is None:
             continue
-        try:
-            price = float(item.get("unit_price", 0) or 0)
-        except (TypeError, ValueError):
-            continue
+        price = float(item.get("unit_price", 0) or 0)
         prices_by_item.setdefault(canonical, []).append((original, price))
 
     issues: list[str] = []
     for canonical, observed in prices_by_item.items():
-        catalog = get_item_price(canonical, db_path)
+        catalog = get_item_price(canonical)
         if catalog <= 0:
             continue
-        flagged = [(o, p) for o, p in observed if abs(p - catalog) / catalog > PRICE_VARIANCE_THRESHOLD]
+        flagged = [
+            (o, p) for o, p in observed if abs(p - catalog) / catalog > PRICE_VARIANCE_THRESHOLD
+        ]
         if flagged:
-            strs = ", ".join(f"${p:.2f} ({abs(p - catalog) / catalog * 100:.1f}%)" for _, p in flagged)
-            issues.append(f"Price variance for '{canonical}': catalog ${catalog:.2f}, invoice: {strs}")
+            strs = ", ".join(
+                f"${p:.2f} ({abs(p - catalog) / catalog * 100:.1f}%)" for _, p in flagged
+            )
+            issues.append(
+                f"Price variance for '{canonical}': catalog ${catalog:.2f}, invoice: {strs}"
+            )
     return issues
 
 
@@ -142,11 +149,8 @@ def _check_math(line_items: list[dict], total_amount: float, tax_amount: float =
         return []
     computed = 0.0
     for item in line_items:
-        try:
-            qty = float(item.get("quantity", 0) or 0)
-            price = float(item.get("unit_price", 0) or 0)
-        except (TypeError, ValueError):
-            qty, price = 0.0, 0.0
+        qty = float(item.get("quantity", 0) or 0)
+        price = float(item.get("unit_price", 0) or 0)
         if qty > 0:
             computed += qty * price
     expected = computed + tax_amount
@@ -160,8 +164,8 @@ def _check_math(line_items: list[dict], total_amount: float, tax_amount: float =
     return []
 
 
-def _check_duplicate(invoice_number: str, db_path: Optional[str]) -> list[str]:
-    is_dup, record = check_duplicate_invoice(invoice_number, db_path)
+def _check_duplicate(invoice_number: str) -> list[str]:
+    is_dup, record = check_duplicate_invoice(invoice_number)
     if is_dup:
         return [
             f"Duplicate invoice: '{invoice_number}' was already processed "
@@ -176,7 +180,7 @@ def _check_currency(currency: str) -> list[str]:
     return []
 
 
-def _parse_date(value: object) -> Optional[date]:
+def _parse_date(value: object) -> date | None:
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -204,13 +208,13 @@ def _check_dates(inv: dict) -> tuple[list[str], list[str]]:
     return issues, warnings
 
 
-def _check_vendor(vendor_name: str, db_path: Optional[str]) -> tuple[list[str], list[str]]:
+def _check_vendor(vendor_name: str) -> tuple[list[str], list[str]]:
     issues: list[str] = []
     warnings: list[str] = []
     if not vendor_name.strip():
         return issues, warnings
 
-    is_approved, info = check_vendor_approved(vendor_name, db_path)
+    is_approved, info = check_vendor_approved(vendor_name)
     if not info.get("found"):
         warnings.append(f"Vendor '{vendor_name}' not found in approved vendor list")
         return issues, warnings
@@ -222,71 +226,91 @@ def _check_vendor(vendor_name: str, db_path: Optional[str]) -> tuple[list[str], 
     return issues, warnings
 
 
+def _aggregate_validation_results(
+    inv: dict,
+    line_items: list[dict],
+    invoice_number: str,
+    vendor: str,
+    currency: str,
+    total: float,
+) -> ValidationResult:
+    all_issues: list[str] = []
+    all_warnings: list[str] = []
+
+    all_issues.extend(_check_required_fields(inv))
+    existence_issues, name_map = _resolve_item_names(line_items)
+    all_issues.extend(existence_issues)
+    stock_issues, stock_checks = _check_aggregate_stock(line_items, name_map)
+    all_issues.extend(stock_issues)
+    all_issues.extend(_check_negative_quantities(line_items))
+
+    all_warnings.extend(_check_price_variance(line_items, name_map))
+    tax = float(inv.get("tax_amount") or 0.0)
+    all_warnings.extend(_check_math(line_items, total, tax))
+    all_warnings.extend(_check_duplicate(invoice_number))
+    all_warnings.extend(_check_currency(currency))
+
+    date_issues, date_warnings = _check_dates(inv)
+    all_issues.extend(date_issues)
+    all_warnings.extend(date_warnings)
+    vendor_issues, vendor_warnings = _check_vendor(vendor)
+    all_issues.extend(vendor_issues)
+    all_warnings.extend(vendor_warnings)
+
+    is_valid = len(all_issues) == 0
+    return ValidationResult(
+        is_valid=is_valid, issues=all_issues, warnings=all_warnings, stock_checks=stock_checks
+    )
+
+
 def validation_node(state: InvoiceState) -> dict:
     t0 = time.monotonic()
     inv: dict = state.get("extracted_invoice") or {}
 
     if not inv:
         logger.error("validation.no_invoice")
-        result = ValidationResult(is_valid=False, issues=["No extracted invoice — extraction may have failed"])
+        result = ValidationResult(
+            is_valid=False, issues=["No extracted invoice — extraction may have failed"]
+        )
         return {
             "validation_result": result.model_dump(),
             "current_agent": "validation",
-            "audit_trail": [AuditEntry(agent_name="validation", action="validation_failed",
-                                       details="No extracted invoice", duration=time.monotonic() - t0).model_dump()],
+            "audit_trail": [
+                AuditEntry(
+                    agent_name="validation",
+                    action="validation_failed",
+                    details="No extracted invoice",
+                    duration=time.monotonic() - t0,
+                ).model_dump()
+            ],
         }
 
-    invoice_number = str(inv.get("invoice_number", "UNKNOWN") or "UNKNOWN")
-    vendor = str(inv.get("vendor_name", "") or "")
+    invoice_number = inv.get("invoice_number") or "UNKNOWN"
+    vendor = inv.get("vendor_name") or ""
     line_items: list[dict] = inv.get("line_items") or []
-    currency = str(inv.get("currency", "USD") or "USD")
-    try:
-        total = float(inv.get("total_amount") or 0.0)
-    except (TypeError, ValueError):
-        total = 0.0
+    currency = inv.get("currency") or "USD"
+    total = float(inv.get("total_amount") or 0.0)
 
-    db_path: Optional[str] = None
-    all_issues: list[str] = []
-    all_warnings: list[str] = []
-
-    # run all checks
-    all_issues.extend(_check_required_fields(inv))
-    existence_issues, name_map = _resolve_item_names(line_items, db_path)
-    all_issues.extend(existence_issues)
-    stock_issues, stock_checks = _check_aggregate_stock(line_items, name_map, db_path)
-    all_issues.extend(stock_issues)
-    all_issues.extend(_check_negative_quantities(line_items))
-
-    # warnings (not hard failures)
-    all_warnings.extend(_check_price_variance(line_items, name_map, db_path))
-    try:
-        tax = float(inv.get("tax_amount") or 0.0)
-    except (TypeError, ValueError):
-        tax = 0.0
-    all_warnings.extend(_check_math(line_items, total, tax))
-    all_warnings.extend(_check_duplicate(invoice_number, db_path))
-    all_warnings.extend(_check_currency(currency))
-
-    date_issues, date_warnings = _check_dates(inv)
-    all_issues.extend(date_issues)
-    all_warnings.extend(date_warnings)
-    vendor_issues, vendor_warnings = _check_vendor(vendor, db_path)
-    all_issues.extend(vendor_issues)
-    all_warnings.extend(vendor_warnings)
-
-    is_valid = len(all_issues) == 0
-    result = ValidationResult(is_valid=is_valid, issues=all_issues, warnings=all_warnings, stock_checks=stock_checks)
+    result = _aggregate_validation_results(inv, line_items, invoice_number, vendor, currency, total)
     duration = time.monotonic() - t0
 
-    logger.info("validation.done", invoice=invoice_number, valid=is_valid,
-                issues=len(all_issues), warnings=len(all_warnings))
+    logger.info(
+        "validation.done",
+        invoice=invoice_number,
+        valid=result.is_valid,
+        issues=len(result.issues),
+        warnings=len(result.warnings),
+    )
 
     return {
         "validation_result": result.model_dump(),
         "current_agent": "validation",
-        "audit_trail": [AuditEntry(
-            agent_name="validation", action="validation_complete",
-            details=f"{'PASSED' if is_valid else 'FAILED'}: {len(all_issues)} issue(s), {len(all_warnings)} warning(s)",
-            duration=duration,
-        ).model_dump()],
+        "audit_trail": [
+            AuditEntry(
+                agent_name="validation",
+                action="validation_complete",
+                details=f"{'PASSED' if result.is_valid else 'FAILED'}: {len(result.issues)} issue(s), {len(result.warnings)} warning(s)",
+                duration=duration,
+            ).model_dump()
+        ],
     }

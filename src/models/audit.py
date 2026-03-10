@@ -33,4 +33,3 @@ class BatchResult(BaseModel):
     rejected_count: int = 0
     flagged_count: int = 0
     avg_processing_time: float = 0.0
-    estimated_savings: float = 0.0

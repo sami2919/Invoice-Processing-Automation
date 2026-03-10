@@ -1,6 +1,7 @@
 """Shared pytest fixtures."""
 
-import os
+import os  # noqa: I001 — must set env before importing src modules
+
 os.environ.setdefault("XAI_API_KEY", "fake-test-key-for-unit-tests")
 
 from pathlib import Path
@@ -52,6 +53,7 @@ def sample_invoices():
 @pytest.fixture(scope="function")
 def pipeline():
     from src.pipeline import build_pipeline
+
     return build_pipeline(checkpointer=MemorySaver())
 
 
@@ -73,10 +75,20 @@ def clean_state():
             "invoice_date": "2026-01-15",
             "due_date": "2026-02-01",
             "line_items": [
-                {"item_name": "WidgetA", "quantity": 10.0, "unit_price": 250.0,
-                 "line_total": 2500.0, "note": None},
-                {"item_name": "WidgetB", "quantity": 5.0, "unit_price": 500.0,
-                 "line_total": 2500.0, "note": None},
+                {
+                    "item_name": "WidgetA",
+                    "quantity": 10.0,
+                    "unit_price": 250.0,
+                    "line_total": 2500.0,
+                    "note": None,
+                },
+                {
+                    "item_name": "WidgetB",
+                    "quantity": 5.0,
+                    "unit_price": 500.0,
+                    "line_total": 2500.0,
+                    "note": None,
+                },
             ],
             "subtotal": 5000.0,
             "tax_amount": 0.0,

@@ -7,7 +7,6 @@ Usage:
 
 import argparse
 import csv
-import glob
 import sys
 import time
 import uuid
@@ -17,43 +16,18 @@ from pathlib import Path
 import structlog
 from langgraph.checkpoint.memory import MemorySaver
 
-from src.config import get_settings
 from src.database import clear_invoice_history, init_db
 from src.models.audit import BatchResult, ProcessingRecord
 from src.pipeline import build_pipeline, process_invoice, resume_after_human_review
+from src.processing import (
+    auto_decide_hitl,
+    batch_process_files,
+    build_processing_record,
+    collect_batch_files,
+    detect_interrupt,
+)
 
 logger = structlog.get_logger(__name__)
-
-
-def _detect_interrupt(pipeline, thread_id: str) -> tuple[bool, dict | None]:
-    """Check if pipeline is paused at an interrupt."""
-    config = {"configurable": {"thread_id": thread_id}}
-    snapshot = pipeline.get_state(config)
-
-    if not snapshot.next:
-        return False, None
-
-    for task in snapshot.tasks:
-        if hasattr(task, "interrupts") and task.interrupts:
-            return True, task.interrupts[0].value
-
-    return False, None
-
-
-def _build_processing_record(state: dict, processing_time: float) -> ProcessingRecord:
-    extracted = state.get("extracted_invoice") or {}
-    fraud = state.get("fraud_result") or {}
-    approval = state.get("approval_decision") or {}
-
-    return ProcessingRecord(
-        invoice_number=extracted.get("invoice_number") or state.get("file_path", "unknown"),
-        vendor=extracted.get("vendor_name") or "MISSING - No vendor specified",
-        amount=float(extracted.get("total_amount") or 0.0),
-        risk_score=int(fraud.get("risk_score") or 0),
-        decision=approval.get("status") or "unknown",
-        processing_time_seconds=processing_time,
-        explanation=state.get("decision_explanation") or approval.get("reasoning") or "",
-    )
 
 
 def _print_result_summary(record: ProcessingRecord) -> None:
@@ -100,24 +74,32 @@ def _export_csv(batch: BatchResult, output_dir: str = ".") -> str:
     csv_path = str(Path(output_dir) / f"batch_results_{ts}.csv")
 
     fieldnames = [
-        "invoice_number", "vendor", "amount", "risk_score",
-        "decision", "processing_time_seconds", "explanation", "timestamp",
+        "invoice_number",
+        "vendor",
+        "amount",
+        "risk_score",
+        "decision",
+        "processing_time_seconds",
+        "explanation",
+        "timestamp",
     ]
 
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         for record in batch.records:
-            writer.writerow({
-                "invoice_number": record.invoice_number,
-                "vendor": record.vendor,
-                "amount": record.amount,
-                "risk_score": record.risk_score,
-                "decision": record.decision,
-                "processing_time_seconds": round(record.processing_time_seconds, 3),
-                "explanation": record.explanation,
-                "timestamp": record.timestamp.isoformat(),
-            })
+            writer.writerow(
+                {
+                    "invoice_number": record.invoice_number,
+                    "vendor": record.vendor,
+                    "amount": record.amount,
+                    "risk_score": record.risk_score,
+                    "decision": record.decision,
+                    "processing_time_seconds": round(record.processing_time_seconds, 3),
+                    "explanation": record.explanation,
+                    "timestamp": record.timestamp.isoformat(),
+                }
+            )
 
     logger.info("batch.csv_exported", path=csv_path, records=len(batch.records))
     return csv_path
@@ -161,37 +143,6 @@ def _prompt_human_decision(review_context: dict) -> tuple[str, str]:
     return decision, reasoning
 
 
-def _auto_decide(state: dict) -> tuple[str, str]:
-    """Decide on behalf of human reviewer in batch/auto mode."""
-    fraud = state.get("fraud_result") or {}
-    validation = state.get("validation_result") or {}
-    risk_score = int(fraud.get("risk_score") or 0)
-    warnings = validation.get("warnings", [])
-
-    settings = get_settings()
-
-    # High risk -> reject
-    if risk_score >= settings.high_risk_threshold:
-        return "rejected", f"Auto-reject: risk score {risk_score} >= {settings.high_risk_threshold}"
-
-    # Medium risk -> escalate for human review
-    if risk_score >= settings.medium_risk_threshold:
-        return "escalated", f"Flagged: medium risk {risk_score}, needs human review"
-
-    # Filter for substantive warnings only
-    ignorable = ("past due", "overdue", "past the due date")
-    substantive_warnings = [
-        w for w in warnings
-        if not any(ign.lower() in w.lower() for ign in ignorable)
-    ]
-
-    if substantive_warnings:
-        return "escalated", f"Flagged for review: {len(substantive_warnings)} warning(s)"
-
-    # Clean -> approve
-    return "approved", "Auto-approved: low risk, no substantive warnings"
-
-
 def run_single_invoice(file_path: str, auto_approve: bool = False) -> ProcessingRecord:
     init_db()
     clear_invoice_history()
@@ -203,88 +154,54 @@ def run_single_invoice(file_path: str, auto_approve: bool = False) -> Processing
     t0 = time.monotonic()
 
     state = process_invoice(pipeline, file_path, thread_id=thread_id)
-    is_interrupted, review_context = _detect_interrupt(pipeline, thread_id)
+    is_interrupted, review_context = detect_interrupt(pipeline, thread_id)
 
     if is_interrupted:
         if auto_approve:
-            decision, reasoning = _auto_decide(state)
+            decision, reasoning = auto_decide_hitl(state)
         else:
             decision, reasoning = _prompt_human_decision(review_context or {})
         state = resume_after_human_review(pipeline, thread_id, decision, reasoning)
 
     processing_time = time.monotonic() - t0
-    record = _build_processing_record(state, processing_time)
+    record = build_processing_record(state, processing_time)
     _print_result_summary(record)
     return record
 
 
-_INVOICE_EXTENSIONS = ("*.txt", "*.json", "*.csv", "*.xml", "*.pdf")
+def _cli_hitl_handler(state: dict, review_ctx: dict | None) -> tuple[str, str]:
+    """Adapter: wraps _prompt_human_decision for the batch_process_files callback."""
+    return _prompt_human_decision(review_ctx or {})
 
 
 def run_batch(directory: str, auto_approve: bool, fresh: bool = False) -> BatchResult:
     init_db()
-    clear_invoice_history()
-    logger.info("batch.cleared_invoice_history")
+    if fresh:
+        clear_invoice_history()
+        logger.info("batch.cleared_invoice_history")
 
     checkpointer = MemorySaver()
     pipeline = build_pipeline(checkpointer=checkpointer)
 
-    # collect files, deduplicate by stem
-    files: list[str] = []
-    for pattern in _INVOICE_EXTENSIONS:
-        files.extend(glob.glob(str(Path(directory) / pattern)))
-
-    seen_stems: dict[str, str] = {}
-    for f in sorted(set(files)):
-        stem = Path(f).stem
-        if stem not in seen_stems:
-            seen_stems[stem] = f
-        else:
-            # prefer non-PDF (text extraction is more reliable)
-            existing = seen_stems[stem]
-            if existing.endswith(".pdf") and not f.endswith(".pdf"):
-                seen_stems[stem] = f
-    files = sorted(seen_stems.values())
+    files = collect_batch_files(Path(directory))
 
     if not files:
         logger.warning("batch.no_files_found", directory=directory)
         return BatchResult()
 
     logger.info("batch.start", directory=directory, file_count=len(files))
+
     records: list[ProcessingRecord] = []
-
-    for file_path in files:
-        thread_id = str(uuid.uuid4())
-        logger.info("batch.processing", file=Path(file_path).name)
-        t0 = time.monotonic()
-
-        try:
-            state = process_invoice(pipeline, file_path, thread_id=thread_id)
-            is_interrupted, review_context = _detect_interrupt(pipeline, thread_id)
-
-            if is_interrupted:
-                if auto_approve:
-                    decision, reasoning = _auto_decide(state)
-                else:
-                    decision, reasoning = _prompt_human_decision(review_context or {})
-                state = resume_after_human_review(pipeline, thread_id, decision, reasoning)
-
-            processing_time = time.monotonic() - t0
-            record = _build_processing_record(state, processing_time)
-            records.append(record)
-
-        except Exception as exc:
-            processing_time = time.monotonic() - t0
-            logger.error("batch.invoice_error", file=file_path, error=str(exc))
-            records.append(ProcessingRecord(
-                invoice_number=Path(file_path).stem,
-                vendor="error",
-                amount=0.0,
-                risk_score=0,
-                decision="error",
-                processing_time_seconds=processing_time,
-                explanation=str(exc),
-            ))
+    for event, payload in batch_process_files(
+        pipeline,
+        files,
+        auto_approve,
+        hitl_handler=None if auto_approve else _cli_hitl_handler,
+    ):
+        if event == "progress":
+            logger.info("batch.processing", file=payload["file"])
+        elif event == "complete":
+            records = payload["records"]
 
     approved = [r for r in records if r.decision == "approved"]
     rejected = [r for r in records if r.decision in ("rejected", "error")]
@@ -308,10 +225,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     mode.add_argument("--invoice_path", metavar="PATH", help="Single invoice file")
     mode.add_argument("--batch", metavar="DIR", help="Directory of invoices for batch mode")
 
-    parser.add_argument("--auto-approve", action="store_true", default=False,
-                        help="Skip HITL, auto-decide based on risk score")
-    parser.add_argument("--fresh", action="store_true", default=False,
-                        help="Clear invoice_history before batch run")
+    parser.add_argument(
+        "--auto-approve",
+        action="store_true",
+        default=False,
+        help="Skip HITL, auto-decide based on risk score",
+    )
+    parser.add_argument(
+        "--fresh", action="store_true", default=False, help="Clear invoice_history before batch run"
+    )
 
     return parser.parse_args(argv)
 

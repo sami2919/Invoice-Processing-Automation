@@ -50,9 +50,17 @@ Routing includes retry loops (up to 3 attempts with structured feedback) for ext
 
 ---
 
-## Key Design Decision
+## Key Design Decisions
 
-LangGraph's `StateGraph` with conditional edges maps perfectly to this pipeline's cyclic structure — the self-correction loop (validate → retry → re-extract) and multi-path approval routing are first-class concepts, not bolted-on workarounds. The `interrupt()` mechanism genuinely pauses the state machine and persists the checkpoint via `MemorySaver`, enabling real HITL review in the web UI rather than simulating it with random decisions. Grok is accessed via `langchain-xai` (`ChatXAI` with `with_structured_output()`), making model swaps a one-line config change. Business rules (stock checks, math verification, duplicate detection) are pure Python with SQLite — the LLM is only called where it adds real value: unstructured text parsing, risk narratives, and plain-English summaries.
+| Decision | Rationale |
+|----------|-----------|
+| **LangGraph StateGraph** over linear chains | The pipeline has genuine cycles (validate → retry → re-extract) and multi-path routing (approve → payment or reject). These are first-class concepts in `StateGraph`, not workarounds. |
+| **`interrupt()` for HITL** over simulated reviews | `interrupt()` + `MemorySaver` genuinely pauses the state machine and persists the checkpoint. The graph can resume hours later with the exact same state — this is what real enterprise HITL requires. |
+| **Deterministic validation + fraud scoring** (no LLM) | Every validation check and fraud signal is pure Python so it's auditable, testable, and deterministic. A compliance team can review the exact rules; an LLM judgment is a black box. |
+| **LLM only where it adds value** | Grok is called for 3 things: (1) unstructured text extraction, (2) fraud risk narratives, (3) VP-readable explanations. Everything else is rule-based. This minimises cost (~$0.02/invoice) and maximises reliability. |
+| **Devil's-advocate reflection** on HITL escalation | Before presenting a case to the human reviewer, Grok challenges the escalation rationale — arguing the other side. This prevents rubber-stamp approvals and surfaces genuine ambiguity. |
+| **SQLite over Postgres** | Right scope for a 3-week prototype. The schema is clean enough that swapping to Postgres is a config change, not a rewrite. |
+| **Weighted fraud signals** (14 checks, 0-100 composite) | Each signal has an explicit weight and severity. The composite score is a `min(sum, 100)` — transparent and debuggable, unlike an LLM-generated risk score. |
 
 ---
 
@@ -174,7 +182,7 @@ python main.py --batch data/invoices/ --auto-approve
 
 ```bash
 pytest tests/ -v
-# 46 tests across 4 modules — extraction, validation, pipeline routing, E2E integration
+# 79 tests across 6 modules — approval, extraction, fraud, validation, pipeline routing, integration
 ```
 
 Tests are fully isolated — an in-memory SQLite database is spun up per test and all Grok API calls are mocked. No API key required to run the test suite.
@@ -185,13 +193,14 @@ Tests are fully isolated — an in-memory SQLite database is spun up per test an
 
 Framed through Galatiq's forward-deployment model:
 
-- **SAP / NetSuite connector** — map invoice fields to purchase order IDs for 3-way matching (PO → receipt → invoice)
+- **3-way PO matching** — map invoice fields to purchase order IDs via SAP/NetSuite connector (PO → receipt → invoice). This is the #1 ask from real AP teams.
 - **Grok Vision for scanned invoices** — bypass OCR entirely for paper invoices, passing the raw image to Grok's multimodal endpoint
 - **A2A protocol** — expose the pipeline as an Agent-to-Agent endpoint so procurement systems can submit invoices programmatically
 - **Slack / Teams notifications** — push HITL review requests directly to the approver's channel with one-click approve/reject
 - **Fine-tuned extraction model** — train a lighter model on the client's historical invoice corpus to eliminate Grok calls for routine formats (80%+ of volume)
-- **PostgreSQL** — replace SQLite with Postgres for multi-user concurrency and persistent audit trail
-- **LangGraph Cloud** — deploy to LangGraph's hosted runtime for scalable HITL with email/Slack interrupts and persistent thread storage
+- **PostgreSQL + Redis** — replace SQLite with Postgres for multi-user concurrency; Redis for LangGraph checkpointing with persistent thread storage
+- **LangGraph Cloud** — deploy to LangGraph's hosted runtime for scalable HITL with email/Slack interrupts
+- **Multi-round reflection** — extend the current single-pass devil's-advocate to a full critique chain where Grok evaluates its own reflection, catching cases where the initial challenge is too weak or too aggressive
 
 ---
 
@@ -207,6 +216,7 @@ Framed through Galatiq's forward-deployment model:
 │   ├── llm/grok_client.py       # ChatXAI wrapper
 │   ├── tools/                    # inventory_db, file_parser, payment_api, pdf_extractor
 │   ├── pipeline.py               # LangGraph graph assembly
+│   ├── processing.py             # Shared utilities (batch, HITL, record building)
 │   ├── config.py                 # pydantic-settings (thresholds + API config)
 │   └── database.py               # SQLite schema + seed data
 ├── tests/                        # extraction, validation, pipeline routing, E2E integration

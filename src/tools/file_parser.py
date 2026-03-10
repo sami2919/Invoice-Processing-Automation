@@ -4,6 +4,7 @@ import json
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+import defusedxml.ElementTree as SafeET
 import pandas as pd
 import structlog
 
@@ -21,14 +22,16 @@ def parse_file(file_path: str) -> tuple[str, str]:
 
     ext = path.suffix.lower()
 
+    _read_text = lambda p: Path(p).read_text(encoding="utf-8", errors="replace")
+
     dispatch = {
-        ".txt": ("txt", _read_txt),
-        ".json": ("json", _read_json),
-        ".csv": ("csv", _read_csv),
+        ".txt": ("txt", _read_text),
+        ".json": ("json", lambda p: json.dumps(json.load(open(p, encoding="utf-8")), indent=2)),
+        ".csv": ("csv", lambda p: pd.read_csv(p, dtype=str).to_string(index=False)),
         ".xml": ("xml", _read_xml),
         ".pdf": ("pdf", _read_pdf),
-        ".eml": ("eml", _read_raw),
-        ".email": ("eml", _read_raw),
+        ".eml": ("eml", _read_text),
+        ".email": ("eml", _read_text),
     }
 
     if ext not in dispatch:
@@ -40,23 +43,8 @@ def parse_file(file_path: str) -> tuple[str, str]:
     return text, file_type
 
 
-def _read_txt(file_path: str) -> str:
-    return Path(file_path).read_text(encoding="utf-8", errors="replace")
-
-
-def _read_json(file_path: str) -> str:
-    with open(file_path, encoding="utf-8") as fh:
-        data = json.load(fh)
-    return json.dumps(data, indent=2)
-
-
-def _read_csv(file_path: str) -> str:
-    df = pd.read_csv(file_path, dtype=str)
-    return df.to_string(index=False)
-
-
 def _read_xml(file_path: str) -> str:
-    tree = ET.parse(file_path)
+    tree = SafeET.parse(file_path)
     root = tree.getroot()
     ET.indent(tree, space="  ")
     return ET.tostring(root, encoding="unicode")
@@ -68,7 +56,3 @@ def _read_pdf(file_path: str) -> str:
         warning_block = "\n\n[PARSER WARNINGS]\n" + "\n".join(f"- {w}" for w in warnings)
         text = text + warning_block if text else warning_block
     return text
-
-
-def _read_raw(file_path: str) -> str:
-    return Path(file_path).read_text(encoding="utf-8", errors="replace")

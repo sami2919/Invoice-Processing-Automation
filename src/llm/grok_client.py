@@ -5,7 +5,6 @@ from typing import Optional, Type
 
 import structlog
 from langchain_xai import ChatXAI
-from openai import OpenAI
 from pydantic import BaseModel
 
 from src.config import get_settings
@@ -36,12 +35,3 @@ def assess(prompt: str, temperature: float = 0.4) -> str:
     llm = get_llm(model=settings.grok_model, temperature=temperature)
     response = llm.invoke(prompt)
     return response.content
-
-
-@lru_cache(maxsize=1)
-def _get_raw_client() -> OpenAI:
-    settings = get_settings()
-    return OpenAI(api_key=settings.xai_api_key, base_url=settings.xai_base_url)
-
-
-raw_client: OpenAI = _get_raw_client()

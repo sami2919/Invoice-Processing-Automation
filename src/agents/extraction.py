@@ -19,9 +19,8 @@ from src.tools.inventory_db import fuzzy_match_item
 logger = structlog.get_logger(__name__)
 
 
-# Looser extraction schemas — no business-rule validators so the LLM can
-# faithfully capture malformed data (negative qty, blank vendor, OCR junk).
-# Validation happens downstream.
+# Loose schemas: capture raw LLM output without business rule validation.
+
 
 class _LineItemExtract(BaseModel):
     item_name: str = ""
@@ -113,27 +112,17 @@ OUTPUT: valid JSON matching this schema exactly — no markdown, no preamble:
 
 
 def _build_user_message(raw_text: str, feedback: str, prior: dict | None) -> str:
-    """Build the user prompt, including self-correction context on retries."""
+    """Build the user prompt, including self correction context on retries."""
     parts = [f"INVOICE TEXT:\n{raw_text}"]
     if feedback and prior:
         parts.append(
-            "\nSELF-CORRECTION REQUIRED:\n"
+            "\nSELF CORRECTION REQUIRED:\n"
             f"Your previous extraction had the following issues:\n{feedback}\n\n"
             f"Previous extraction output:\n{json.dumps(prior, indent=2, default=str)}\n\n"
             "Re-examine the source invoice text carefully and correct these "
             "specific problems."
         )
     return "\n".join(parts)
-
-
-def _coerce_line_item(raw: dict) -> dict:
-    return {
-        "item_name": str(raw.get("item_name", raw.get("item", "Unknown"))),
-        "quantity": float(raw.get("quantity", 0)),
-        "unit_price": float(raw.get("unit_price", 0.0)),
-        "line_total": (float(raw["line_total"]) if raw.get("line_total") is not None else None),
-        "note": raw.get("note"),
-    }
 
 
 def _to_extracted_invoice(raw: _InvoiceExtract, warnings: list[str]) -> ExtractedInvoice:
@@ -145,7 +134,13 @@ def _to_extracted_invoice(raw: _InvoiceExtract, warnings: list[str]) -> Extracte
     except ValidationError as exc:
         warnings.append(f"Pydantic validation issues (data extracted as-is): {str(exc)[:300]}")
         raw_items = data.get("line_items", [])
-        items = [LineItem.model_construct(**_coerce_line_item(item)) for item in raw_items]
+        items = [LineItem.model_construct(
+            item_name=str(item.get("item_name", item.get("item", "Unknown"))),
+            quantity=float(item.get("quantity", 0)),
+            unit_price=float(item.get("unit_price", 0.0)),
+            line_total=(float(item["line_total"]) if item.get("line_total") is not None else None),
+            note=item.get("note"),
+        ) for item in raw_items]
         return ExtractedInvoice.model_construct(
             invoice_number=str(data.get("invoice_number", "UNKNOWN")),
             vendor_name=str(data.get("vendor_name", "")),
@@ -174,8 +169,8 @@ def _extract_json_block(text: str) -> dict:
         try:
             obj, _ = json.JSONDecoder().raw_decode(text, start)
             return obj
-        except json.JSONDecodeError:
-            pass
+        except json.JSONDecodeError as e:
+            logger.warning("extraction.json_decode_failed", error=str(e)[:200])
 
     raise ValueError(f"No valid JSON in LLM response: {text[:200]!r}")
 
@@ -240,20 +235,9 @@ def _verify_total(invoice: ExtractedInvoice, warnings: list[str]) -> None:
         )
 
 
-def extraction_node(state: InvoiceState) -> dict:
-    retries = state.get("extraction_retries", 0)
-    feedback = state.get("extraction_feedback", "") or ""
-    prior: dict | None = state.get("extracted_invoice")
-
-    raw_text: str = state.get("raw_text") or ""
-    file_type: str = state.get("file_type", "unknown") or "unknown"
-    if not raw_text:
-        raw_text, file_type = parse_file(state["file_path"])
-
-    logger.info("extraction.start", attempt=retries + 1, file_type=file_type, chars=len(raw_text))
-
-    warnings: list[str] = []
-
+def _call_llm_for_extraction(
+    raw_text: str, feedback: str, prior: dict | None, retries: int, warnings: list[str]
+) -> _InvoiceExtract | dict:
     messages = [
         SystemMessage(content=_SYSTEM_PROMPT),
         HumanMessage(content=_build_user_message(raw_text, feedback, prior)),
@@ -274,18 +258,26 @@ def extraction_node(state: InvoiceState) -> dict:
             return {
                 "error_message": f"Extraction failed: {e}",
                 "current_agent": "extraction",
-                "audit_trail": [{
-                    "agent": "extraction", "action": "error",
-                    "attempt": retries + 1,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "error": str(e),
-                }],
+                "audit_trail": [
+                    {
+                        "agent": "extraction",
+                        "action": "error",
+                        "attempt": retries + 1,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "error": str(e),
+                    }
+                ],
             }
 
+    return raw_invoice
+
+
+def _normalize_extracted_data(
+    raw_invoice: _InvoiceExtract, warnings: list[str]
+) -> ExtractedInvoice:
     invoice = _to_extracted_invoice(raw_invoice, warnings)
     invoice = _fuzzy_match_items(invoice, warnings)
 
-    # normalize invoice number
     norm = _normalize_invoice_number(invoice.invoice_number)
     if norm != invoice.invoice_number:
         warnings.append(f"Invoice number normalized: '{invoice.invoice_number}' -> '{norm}'")
@@ -295,6 +287,28 @@ def extraction_node(state: InvoiceState) -> dict:
 
     all_warnings = list(invoice.extraction_warnings or []) + warnings
     invoice = invoice.model_copy(update={"extraction_warnings": all_warnings})
+    return invoice
+
+
+def extraction_node(state: InvoiceState) -> dict:
+    retries = state.get("extraction_retries", 0)
+    feedback = state.get("extraction_feedback", "") or ""
+    prior: dict | None = state.get("extracted_invoice")
+
+    raw_text: str = state.get("raw_text") or ""
+    file_type: str = state.get("file_type", "unknown") or "unknown"
+    if not raw_text:
+        raw_text, file_type = parse_file(state["file_path"])
+
+    logger.info("extraction.start", attempt=retries + 1, file_type=file_type, chars=len(raw_text))
+
+    warnings: list[str] = []
+
+    result = _call_llm_for_extraction(raw_text, feedback, prior, retries, warnings)
+    if isinstance(result, dict):
+        return result
+
+    invoice = _normalize_extracted_data(result, warnings)
 
     logger.info(
         "extraction.done",
@@ -309,15 +323,17 @@ def extraction_node(state: InvoiceState) -> dict:
         "file_type": file_type,
         "extracted_invoice": invoice.model_dump(mode="json"),
         "current_agent": "extraction",
-        "audit_trail": [{
-            "agent": "extraction",
-            "action": "extract",
-            "attempt": retries + 1,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "invoice_number": invoice.invoice_number,
-            "vendor_name": invoice.vendor_name,
-            "total_amount": invoice.total_amount,
-            "confidence": invoice.confidence_scores,
-            "warnings": all_warnings,
-        }],
+        "audit_trail": [
+            {
+                "agent": "extraction",
+                "action": "extract",
+                "attempt": retries + 1,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "invoice_number": invoice.invoice_number,
+                "vendor_name": invoice.vendor_name,
+                "total_amount": invoice.total_amount,
+                "confidence": invoice.confidence_scores,
+                "warnings": invoice.extraction_warnings,
+            }
+        ],
     }

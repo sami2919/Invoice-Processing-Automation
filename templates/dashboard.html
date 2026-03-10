@@ -530,13 +530,15 @@
     const $ = (sel) => document.querySelector(sel);
     const $$ = (sel) => document.querySelectorAll(sel);
 
-    function riskColor(score) {
+    function riskColor(score, decision) {
+      if (decision === 'rejected' || decision === 'error') return '#DC2626';
+      if (decision === 'escalated' || decision === 'pending_human_review') return '#D97706';
       if (score >= 70) return '#DC2626';
       if (score >= 30) return '#D97706';
       return '#059669';
     }
-    function riskBadge(score) {
-      const c = riskColor(score);
+    function riskBadge(score, decision) {
+      const c = riskColor(score, decision);
       return '<span style="background:'+c+'; color:#fff; padding:2px 10px; border-radius:20px; font-weight:600; font-size:0.75rem;">'+score+'/100</span>';
     }
     function decisionColor(d) {
@@ -728,7 +730,7 @@
       $('#hitl-invoice').textContent = inv.invoice_number || ctx.invoice_number || '—';
       $('#hitl-vendor').textContent = inv.vendor_name || ctx.vendor || '—';
       $('#hitl-amount').textContent = formatMoney(ctx.amount || 0);
-      $('#hitl-risk-badge').innerHTML = riskBadge(ctx.risk_score || 0);
+      $('#hitl-risk-badge').innerHTML = riskBadge(ctx.risk_score || 0, ctx.recommendation);
       $('#hitl-rec-badge').innerHTML = decisionBadge(ctx.recommendation || 'unknown');
 
       const narrative = ctx.fraud_narrative || ctx.narrative || '';
@@ -803,7 +805,7 @@
               decisionBadge(dec) +
             '</div>' +
             '<div style="display:flex; align-items:center; gap:16px; font-size:0.85rem; color:#94A3B8;">' +
-              '<span>Risk: '+riskBadge(record.risk_score)+'</span>' +
+              '<span>Risk: '+riskBadge(record.risk_score, dec)+'</span>' +
               '<span style="font-weight:500; color:#fff;">'+formatMoney(record.amount)+'</span>' +
               '<span>'+record.processing_time_seconds.toFixed(1)+'s</span>' +
             '</div>' +
@@ -951,7 +953,7 @@
             '<td style="padding:12px 16px; font-weight:500; color:#fff;">'+r.invoice_number+'</td>' +
             '<td style="padding:12px 16px; color:#CBD5E1;">'+r.vendor+'</td>' +
             '<td style="padding:12px 16px; text-align:right; color:#fff;">'+formatMoney(r.amount)+'</td>' +
-            '<td style="padding:12px 16px; text-align:center;">'+riskBadge(r.risk_score)+'</td>' +
+            '<td style="padding:12px 16px; text-align:center;">'+riskBadge(r.risk_score, r.decision)+'</td>' +
             '<td style="padding:12px 16px; text-align:center;">'+decisionBadge(r.decision)+'</td>' +
             '<td style="padding:12px 16px; text-align:right; color:#94A3B8;">'+r.processing_time_seconds.toFixed(1)+'s</td>' +
           '</tr>';

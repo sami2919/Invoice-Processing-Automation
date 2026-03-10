@@ -1,4 +1,9 @@
-"""LangGraph pipeline assembly."""
+"""LangGraph pipeline assembly.
+
+Two routing points: validate → retry_extraction (self correction loop) and
+approve → payment | reject (with interrupt based HITL). MemorySaver
+checkpoints every node so the graph can pause at interrupt() and resume.
+"""
 
 import uuid
 from typing import Optional
@@ -33,7 +38,6 @@ def rejection_node(state: InvoiceState) -> dict:
     vendor = invoice.get("vendor_name", "UNKNOWN")
     amount = float(invoice.get("total_amount") or 0)
 
-    # Record so duplicate detection works on subsequent invoices
     actual_status = existing.get("status", "rejected") if existing else "rejected"
     try:
         record_invoice(
@@ -128,8 +132,11 @@ def route_after_validation(state: InvoiceState) -> str:
 
 def route_after_approval(state: InvoiceState) -> str:
     decision = state.get("approval_decision") or {}
-    if decision.get("status") == "approved":
+    status = decision.get("status")
+    if status == "approved":
         return "payment"
+    if status in ("escalated", "pending_human_review"):
+        return "reject"
     return "reject"
 
 

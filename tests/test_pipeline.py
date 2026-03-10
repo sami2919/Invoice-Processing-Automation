@@ -10,8 +10,16 @@ def test_pipeline_compiles(pipeline):
 
 
 def test_pipeline_has_expected_nodes(pipeline):
-    expected = {"extract", "retry_extraction", "validate", "fraud_check",
-                "approve", "payment", "reject", "explain"}
+    expected = {
+        "extract",
+        "retry_extraction",
+        "validate",
+        "fraud_check",
+        "approve",
+        "payment",
+        "reject",
+        "explain",
+    }
     actual = set(pipeline.get_graph().nodes.keys())
     assert expected.issubset(actual), f"Missing nodes: {expected - actual}"
 
@@ -68,7 +76,9 @@ def test_route_after_approval_rejected():
 def test_recursion_limit():
     mock_pipeline = MagicMock()
     mock_pipeline.invoke.return_value = {
-        "audit_trail": [], "current_agent": "explain", "decision_explanation": "done",
+        "audit_trail": [],
+        "current_agent": "explain",
+        "decision_explanation": "done",
     }
     with patch("src.pipeline.parse_file", return_value=("invoice text", "txt")):
         with patch("src.pipeline.init_db"):

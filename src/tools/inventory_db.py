@@ -13,40 +13,27 @@ logger = structlog.get_logger(__name__)
 FUZZY_THRESHOLD = 0.8
 
 
-def check_item_exists(item_name: str, db_path: str | None = None) -> bool:
+def _query_inventory(item_name: str, column: str, db_path: str | None = None):
     conn = get_db_connection(db_path)
     try:
-        row = conn.execute(
-            "SELECT 1 FROM inventory WHERE LOWER(item) = LOWER(?)",
+        return conn.execute(
+            f"SELECT {column} FROM inventory WHERE LOWER(item) = LOWER(?)",
             (item_name,),
         ).fetchone()
-        return row is not None
     finally:
         conn.close()
+
+
+def check_item_exists(item_name: str, db_path: str | None = None) -> bool:
+    return _query_inventory(item_name, "1", db_path) is not None
 
 
 def get_item_stock(item_name: str, db_path: str | None = None) -> int:
-    conn = get_db_connection(db_path)
-    try:
-        row = conn.execute(
-            "SELECT stock FROM inventory WHERE LOWER(item) = LOWER(?)",
-            (item_name,),
-        ).fetchone()
-        return int(row["stock"]) if row else 0
-    finally:
-        conn.close()
+    return int(r["stock"]) if (r := _query_inventory(item_name, "stock", db_path)) else 0
 
 
 def get_item_price(item_name: str, db_path: str | None = None) -> float:
-    conn = get_db_connection(db_path)
-    try:
-        row = conn.execute(
-            "SELECT unit_price FROM inventory WHERE LOWER(item) = LOWER(?)",
-            (item_name,),
-        ).fetchone()
-        return float(row["unit_price"]) if row else 0.0
-    finally:
-        conn.close()
+    return float(r["unit_price"]) if (r := _query_inventory(item_name, "unit_price", db_path)) else 0.0
 
 
 def fuzzy_match_item(item_name: str, db_path: str | None = None) -> Optional[str]:
@@ -74,7 +61,9 @@ def fuzzy_match_item(item_name: str, db_path: str | None = None) -> Optional[str
             best_match = canonical
 
     if best_ratio >= FUZZY_THRESHOLD:
-        logger.debug("fuzzy_match_found", query=item_name, match=best_match, ratio=round(best_ratio, 3))
+        logger.debug(
+            "fuzzy_match_found", query=item_name, match=best_match, ratio=round(best_ratio, 3)
+        )
         return best_match
 
     return None
@@ -111,8 +100,12 @@ def check_vendor_approved(vendor_name: str, db_path: str | None = None) -> tuple
                 best_row = r
 
         if best_ratio >= FUZZY_THRESHOLD and best_row is not None:
-            logger.debug("fuzzy_vendor_match", query=vendor_name,
-                         match=best_row["name"], ratio=round(best_ratio, 3))
+            logger.debug(
+                "fuzzy_vendor_match",
+                query=vendor_name,
+                match=best_row["name"],
+                ratio=round(best_ratio, 3),
+            )
             info = dict(best_row)
             info["found"] = True
             info["is_approved"] = bool(info["is_approved"])
